@@ -6,10 +6,65 @@ import PriorityBadge from '../../components/PriorityBadge';
 import { useTitle } from '../../hooks/useTitle';
 import { useAuth } from '../../contexts/AuthContext';
 
+// ── CSV helpers ───────────────────────────────────────────────────────────────
+
+function escapeCSV(val: string): string {
+  if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+    return `"${val.replace(/"/g, '""')}"`;
+  }
+  return val;
+}
+
+function parseCSVRow(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (c === ',' && !inQuotes) {
+      result.push(current); current = '';
+    } else { current += c; }
+  }
+  result.push(current);
+  return result;
+}
+
+function parseCSV(text: string): Record<string, string>[] {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = parseCSVRow(lines[0]).map(h => h.trim());
+  return lines.slice(1).filter(l => l.trim()).map(line => {
+    const vals = parseCSVRow(line);
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim(); });
+    return obj;
+  });
+}
+
+const CSV_HEADERS = ['Title','Priority','Template','TestType','Category','Tags','Section','Precondition','Steps','ExpectedResult','References'];
+
+function generateSampleCSV(): string {
+  const rows = [
+    ['Login with valid credentials','HIGH','STEPS','FUNCTIONAL','Authentication','smoke,regression','','User must be logged in','Navigate to /login;;Enter valid email;;Enter password;;Click Sign In','User is redirected to dashboard','JIRA-123'],
+    ['Forgot password flow','MEDIUM','TEXT','FUNCTIONAL','Authentication','regression','','User is on login page','Click Forgot Password, enter email, check inbox, click reset link','Password reset email is received',''],
+  ];
+  return [CSV_HEADERS.join(','), ...rows.map(r => r.map(escapeCSV).join(','))].join('\n');
+}
+
 interface Section {
   id: string; name: string; depth: number;
   _count: { testCases: number };
   children: Section[];
+}
+
+interface ImportRow {
+  title: string; priority: string; template: string; testType: string;
+  category: string; tags: string[]; sectionId: string | null; sectionName: string;
+  description: string; steps: unknown[]; expectedResult: string; references: string[];
+  error?: string;
 }
 
 interface TestCase {
@@ -125,6 +180,13 @@ export default function TestCaseList() {
   const [bulkMoveSuites, setBulkMoveSuites]   = useState<{ id: string; name: string }[]>([]);
   const [bulkBusy, setBulkBusy]               = useState(false);
 
+  // Import / Export
+  const [showImport, setShowImport]     = useState(false);
+  const [importStep, setImportStep]     = useState<'upload' | 'preview' | 'done'>('upload');
+  const [importRows, setImportRows]     = useState<ImportRow[]>([]);
+  const [importResult, setImportResult] = useState<{ imported: number; errors: { row: number; error: string }[] } | null>(null);
+  const [importBusy, setImportBusy]     = useState(false);
+
   const canCreate = ['ADMIN', 'QA'].includes(user?.role ?? '');
   const base = projectId ? `/projects/${projectId}` : '';
   const dragTcId = useRef<string | null>(null);
@@ -178,9 +240,9 @@ export default function TestCaseList() {
     setBulkBusy(false);
   }
 
-  // Load sections/suites when bulk-move or bulk-copy modal opens
+  // Load sections/suites when bulk-move, bulk-copy, or import modal opens
   useEffect(() => {
-    if ((!showBulkMove && !showBulkCopy) || !projectId) return;
+    if ((!showBulkMove && !showBulkCopy && !showImport) || !projectId) return;
     client.get(`/projects/${projectId}`).then((r) => {
       const proj = r.data;
       const suites: { id: string; name: string }[] = [];
@@ -198,7 +260,119 @@ export default function TestCaseList() {
       setBulkMoveSuites(suites);
       setBulkMoveSections(flat);
     });
-  }, [showBulkMove, showBulkCopy, projectId]);
+  }, [showBulkMove, showBulkCopy, showImport, projectId]);
+
+  // ── Export ────────────────────────────────────────────────────────────────
+
+  function handleExport() {
+    const rows = visibleCases.map(tc => {
+      const rawSteps: unknown[] = (() => { try { return JSON.parse(tc.steps || '[]'); } catch { return []; } })();
+      const stepsStr = tc.template === 'STEPS'
+        ? rawSteps.map((s) => (typeof s === 'string' ? s : (s as Record<string,string>).description || '')).join(';;')
+        : String((rawSteps[0] as string) || '');
+      const tags: string[] = (() => { try { return JSON.parse(tc.tags || '[]'); } catch { return []; } })();
+      const refs: string[] = (() => { try { return JSON.parse(tc.references || '[]'); } catch { return []; } })();
+      return [
+        tc.title, tc.priority, tc.template, tc.testType,
+        tc.category || '', tags.join(','), tc.section?.name || '',
+        tc.description || '', stepsStr, tc.expectedResult, refs.join(';;'),
+      ].map(escapeCSV).join(',');
+    });
+    const csv = [CSV_HEADERS.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `test-cases-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadSampleCSV() {
+    const csv = generateSampleCSV();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'test-cases-sample.csv'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Import ────────────────────────────────────────────────────────────────
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const csvRows = parseCSV(reader.result as string);
+      const parsed: ImportRow[] = csvRows.map(row => {
+        const tpl = row.Template?.toUpperCase();
+        const template = ['STEPS','TEXT','EXPLORATORY','BDD'].includes(tpl) ? tpl : 'STEPS';
+        const stepsRaw = row.Steps || '';
+        let steps: unknown[];
+        if (template === 'STEPS') {
+          steps = stepsRaw.split(';;').filter(Boolean).map(s => ({ description: s.trim(), screenshots: [], expectedResult: '', expectedScreenshots: [] }));
+        } else if (template === 'TEXT') {
+          steps = stepsRaw ? [stepsRaw] : [];
+        } else { steps = []; }
+        const sectionName = row.Section?.trim() || '';
+        const sectionId = sectionName
+          ? (bulkMoveSections.find(s => s.label.toLowerCase() === sectionName.toLowerCase())?.id ?? null)
+          : null;
+        const ttRaw = row.TestType?.toUpperCase();
+        const testType = ['FUNCTIONAL','REGRESSION','PERFORMANCE','USABILITY','SECURITY','SMOKE','SANITY'].includes(ttRaw) ? ttRaw : 'FUNCTIONAL';
+        const prRaw = row.Priority?.toUpperCase();
+        const priority = ['LOW','MEDIUM','HIGH','CRITICAL'].includes(prRaw) ? prRaw : 'MEDIUM';
+        return {
+          title: row.Title?.trim() || '',
+          priority, template, testType,
+          category: row.Category?.trim() || '',
+          tags: row.Tags?.split(',').map(t => t.trim()).filter(Boolean) || [],
+          sectionId, sectionName,
+          description: row.Precondition?.trim() || '',
+          steps,
+          expectedResult: row.ExpectedResult?.trim() || '',
+          references: row.References?.split(';;').map(r => r.trim()).filter(Boolean) || [],
+          error: !row.Title?.trim() ? 'Title is required' : undefined,
+        };
+      });
+      setImportRows(parsed);
+      setImportStep('preview');
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  async function handleImportSubmit() {
+    const valid = importRows.filter(r => !r.error);
+    if (!valid.length) return;
+    setImportBusy(true);
+    try {
+      const { data } = await client.post('/test-cases/bulk-import', {
+        projectId,
+        cases: valid.map(r => ({
+          title: r.title, priority: r.priority, template: r.template, testType: r.testType,
+          category: r.category || null, tags: r.tags, sectionId: r.sectionId,
+          description: r.description || null, steps: r.steps,
+          expectedResult: r.expectedResult, references: r.references,
+        })),
+      });
+      setImportResult(data);
+      setImportStep('done');
+      const params = new URLSearchParams();
+      if (projectId) params.set('projectId', projectId);
+      if (status) params.set('status', status);
+      if (priority) params.set('priority', priority);
+      client.get(`/test-cases?${params}`).then(r => setCases(r.data));
+    } finally { setImportBusy(false); }
+  }
+
+  function closeImport() {
+    setShowImport(false);
+    setImportStep('upload');
+    setImportRows([]);
+    setImportResult(null);
+  }
 
   async function handleBulkMove() {
     if (checkedIds.size === 0) return;
@@ -434,56 +608,25 @@ export default function TestCaseList() {
           <h2 className="text-2xl font-bold text-gray-900">Test Cases</h2>
           <p className="text-gray-500 text-sm mt-0.5">{cases.length} total</p>
         </div>
-        {canCreate && (
-          <Link to={`${base}/test-cases/new`} className="btn-primary">+ New Test Case</Link>
-        )}
+        <div className="flex items-center gap-2">
+          <button onClick={handleExport} disabled={visibleCases.length === 0}
+            className="btn-secondary text-sm disabled:opacity-40">
+            ↓ Export CSV
+          </button>
+          {canCreate && (
+            <button onClick={() => setShowImport(true)} className="btn-secondary text-sm">
+              ↑ Import CSV
+            </button>
+          )}
+          {canCreate && (
+            <Link to={`${base}/test-cases/new`} className="btn-primary">+ New Test Case</Link>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-4 items-start">
 
-        {/* ── Left: Section sidebar ─────────────────────────────────────────── */}
-        <div className="w-60 shrink-0">
-          <div className="card p-3">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1 mb-2">Sections</p>
-            <button
-              onClick={() => setSelectedSectionId(null)}
-              className={`w-full text-left flex items-center justify-between px-2 py-1.5 rounded-lg text-sm mb-1 transition-colors ${
-                !selectedSectionId ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              <span>All Test Cases</span>
-              <span className="text-xs text-gray-400">{cases.length}</span>
-            </button>
-            {sections.length === 0 ? (
-              <p className="text-xs text-gray-400 px-2 py-2">No sections yet.</p>
-            ) : (
-              <SectionTree
-                sections={sections} selectedId={selectedSectionId} onSelect={setSelectedSectionId}
-                dropTargetId={dropTargetSectionId}
-                onDragOver={(id) => setDropTargetSectionId(id)}
-                onDragLeave={() => setDropTargetSectionId(null)}
-                onDrop={(id) => handleDrop(id)}
-              />
-            )}
-            {/* No Section drop zone */}
-            {draggingTcId && (
-              <div
-                className={`mt-2 px-2 py-1.5 rounded-lg border border-dashed text-xs transition-colors select-none ${
-                  dropTargetSectionId === NO_SECTION_DROP_ID
-                    ? 'bg-orange-50 border-orange-400 text-orange-600 font-medium'
-                    : 'border-gray-300 text-gray-400 hover:border-gray-400'
-                }`}
-                onDragOver={(e) => { e.preventDefault(); setDropTargetSectionId(NO_SECTION_DROP_ID); }}
-                onDragLeave={() => setDropTargetSectionId(null)}
-                onDrop={(e) => { e.preventDefault(); handleDrop(NO_SECTION_DROP_ID); }}
-              >
-                {dropTargetSectionId === NO_SECTION_DROP_ID ? '↙ Drop to remove section' : '⊘ No Section'}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Center: Test cases table ──────────────────────────────────────── */}
+        {/* ── Left: Test cases table ────────────────────────────────────────── */}
         <div className="flex-1 min-w-0">
           {/* Filters */}
           <div className="flex gap-3 mb-3">
@@ -699,6 +842,48 @@ export default function TestCaseList() {
             </div>
           </div>
         )}
+
+        {/* ── Right: Section sidebar ────────────────────────────────────────── */}
+        <div className="w-60 shrink-0">
+          <div className="card p-3">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1 mb-2">Sections</p>
+            <button
+              onClick={() => setSelectedSectionId(null)}
+              className={`w-full text-left flex items-center justify-between px-2 py-1.5 rounded-lg text-sm mb-1 transition-colors ${
+                !selectedSectionId ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <span>All Test Cases</span>
+              <span className="text-xs text-gray-400">{cases.length}</span>
+            </button>
+            {sections.length === 0 ? (
+              <p className="text-xs text-gray-400 px-2 py-2">No sections yet.</p>
+            ) : (
+              <SectionTree
+                sections={sections} selectedId={selectedSectionId} onSelect={setSelectedSectionId}
+                dropTargetId={dropTargetSectionId}
+                onDragOver={(id) => setDropTargetSectionId(id)}
+                onDragLeave={() => setDropTargetSectionId(null)}
+                onDrop={(id) => handleDrop(id)}
+              />
+            )}
+            {/* No Section drop zone */}
+            {draggingTcId && (
+              <div
+                className={`mt-2 px-2 py-1.5 rounded-lg border border-dashed text-xs transition-colors select-none ${
+                  dropTargetSectionId === NO_SECTION_DROP_ID
+                    ? 'bg-orange-50 border-orange-400 text-orange-600 font-medium'
+                    : 'border-gray-300 text-gray-400 hover:border-gray-400'
+                }`}
+                onDragOver={(e) => { e.preventDefault(); setDropTargetSectionId(NO_SECTION_DROP_ID); }}
+                onDragLeave={() => setDropTargetSectionId(null)}
+                onDrop={(e) => { e.preventDefault(); handleDrop(NO_SECTION_DROP_ID); }}
+              >
+                {dropTargetSectionId === NO_SECTION_DROP_ID ? '↙ Drop to remove section' : '⊘ No Section'}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Bulk copy modal */}
@@ -764,6 +949,220 @@ export default function TestCaseList() {
                 {bulkBusy ? 'Moving…' : 'Move'}
               </button>
               <button className="btn-secondary flex-1 justify-center" onClick={() => setShowBulkMove(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import CSV modal */}
+      {showImport && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl flex flex-col" style={{ maxHeight: '90vh' }}>
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 shrink-0">
+              <div className="flex items-center gap-3">
+                <h3 className="text-base font-semibold text-gray-900">Import Test Cases</h3>
+                <div className="flex items-center gap-1 text-xs">
+                  {(['upload', 'preview', 'done'] as const).map((step, idx) => (
+                    <Fragment key={step}>
+                      {idx > 0 && <span className="text-gray-300 mx-1">›</span>}
+                      <span className={`px-2 py-0.5 rounded-full font-medium ${
+                        importStep === step
+                          ? 'bg-blue-100 text-blue-700'
+                          : idx < (['upload','preview','done'] as const).indexOf(importStep)
+                            ? 'text-green-600'
+                            : 'text-gray-400'
+                      }`}>
+                        {idx + 1}. {step.charAt(0).toUpperCase() + step.slice(1)}
+                      </span>
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+              <button onClick={closeImport} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+            </div>
+
+            {/* Modal body */}
+            <div className="overflow-y-auto flex-1 px-6 py-5">
+
+              {/* Step 1: Upload */}
+              {importStep === 'upload' && (
+                <div className="space-y-5">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800 space-y-1">
+                    <p className="font-medium">CSV Format</p>
+                    <p className="text-blue-700 text-xs">Required column: <code className="bg-blue-100 px-1 rounded">Title</code>. Optional: Priority, Template, TestType, Category, Tags, Section, Precondition, Steps, ExpectedResult, References.</p>
+                    <ul className="text-xs text-blue-600 list-disc list-inside space-y-0.5 mt-1">
+                      <li>Steps: separate multiple steps with <code className="bg-blue-100 px-1 rounded">;;</code></li>
+                      <li>Tags: comma-separated values</li>
+                      <li>References: separate multiple with <code className="bg-blue-100 px-1 rounded">;;</code></li>
+                      <li>Priority: LOW, MEDIUM, HIGH, CRITICAL (defaults to MEDIUM)</li>
+                      <li>Template: STEPS, TEXT, EXPLORATORY, BDD (defaults to STEPS)</li>
+                    </ul>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button onClick={downloadSampleCSV} className="btn-secondary text-sm">
+                      ↓ Download Sample CSV
+                    </button>
+                    <span className="text-xs text-gray-400">Use this as a template for your import file</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Select CSV file</label>
+                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors">
+                      <div className="text-center">
+                        <p className="text-2xl mb-1">📄</p>
+                        <p className="text-sm text-gray-600 font-medium">Click to choose a CSV file</p>
+                        <p className="text-xs text-gray-400 mt-0.5">or drag and drop here</p>
+                      </div>
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        className="hidden"
+                        onChange={handleImportFile}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2: Preview */}
+              {importStep === 'preview' && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">
+                        {importRows.filter(r => !r.error).length} of {importRows.length} rows ready to import
+                      </p>
+                      {importRows.some(r => r.error) && (
+                        <p className="text-xs text-red-600 mt-0.5">
+                          {importRows.filter(r => r.error).length} row{importRows.filter(r => r.error).length !== 1 ? 's' : ''} have errors and will be skipped
+                        </p>
+                      )}
+                    </div>
+                    <button onClick={() => setImportStep('upload')} className="text-xs text-gray-400 hover:text-gray-600">
+                      ← Back
+                    </button>
+                  </div>
+
+                  <div className="border border-gray-200 rounded-lg overflow-hidden">
+                    <div className="overflow-x-auto" style={{ maxHeight: '360px', overflowY: 'auto' }}>
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600 w-6">#</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Title</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Priority</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Template</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Category</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Section</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600">Steps</th>
+                            <th className="px-3 py-2 text-left font-medium text-gray-600 w-20">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importRows.map((row, i) => (
+                            <tr key={i} className={`border-b border-gray-100 ${row.error ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
+                              <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                              <td className="px-3 py-2 font-medium text-gray-800 max-w-[200px]">
+                                <span className="block truncate" title={row.title}>{row.title || <em className="text-red-400">missing</em>}</span>
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                  row.priority === 'CRITICAL' ? 'bg-red-100 text-red-700' :
+                                  row.priority === 'HIGH' ? 'bg-orange-100 text-orange-700' :
+                                  row.priority === 'LOW' ? 'bg-gray-100 text-gray-600' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>{row.priority}</span>
+                              </td>
+                              <td className="px-3 py-2 text-gray-600">{row.template}</td>
+                              <td className="px-3 py-2 text-gray-500">{row.category || '—'}</td>
+                              <td className="px-3 py-2 text-gray-500 max-w-[120px]">
+                                {row.sectionName ? (
+                                  <span className={`block truncate ${row.sectionId ? 'text-green-700' : 'text-orange-600'}`} title={row.sectionName}>
+                                    {row.sectionId ? '✓ ' : '? '}{row.sectionName}
+                                  </span>
+                                ) : '—'}
+                              </td>
+                              <td className="px-3 py-2 text-gray-500">
+                                {Array.isArray(row.steps) ? row.steps.length : 0} step{(Array.isArray(row.steps) ? row.steps.length : 0) !== 1 ? 's' : ''}
+                              </td>
+                              <td className="px-3 py-2">
+                                {row.error ? (
+                                  <span className="text-red-600 font-medium" title={row.error}>✕ Error</span>
+                                ) : (
+                                  <span className="text-green-600 font-medium">✓ Ready</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {importRows.some(r => r.error) && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-xs text-red-700 space-y-1">
+                      <p className="font-medium">Rows with errors (will be skipped):</p>
+                      {importRows.filter(r => r.error).map((r, i) => (
+                        <p key={i}>Row {importRows.indexOf(r) + 1}: {r.error}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Step 3: Done */}
+              {importStep === 'done' && importResult && (
+                <div className="space-y-4">
+                  <div className="flex flex-col items-center py-4 text-center">
+                    <div className="text-4xl mb-3">{importResult.imported > 0 ? '✅' : '⚠️'}</div>
+                    <p className="text-lg font-semibold text-gray-900">
+                      {importResult.imported > 0
+                        ? `${importResult.imported} test case${importResult.imported !== 1 ? 's' : ''} imported successfully`
+                        : 'No test cases were imported'}
+                    </p>
+                    {importResult.errors.length > 0 && (
+                      <p className="text-sm text-gray-500 mt-1">
+                        {importResult.errors.length} row{importResult.errors.length !== 1 ? 's' : ''} failed
+                      </p>
+                    )}
+                  </div>
+
+                  {importResult.errors.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm space-y-1">
+                      <p className="font-medium text-red-800">Import errors:</p>
+                      {importResult.errors.map((e, i) => (
+                        <p key={i} className="text-xs text-red-700">Row {e.row}: {e.error}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 shrink-0">
+              {importStep === 'preview' && (
+                <>
+                  <button onClick={closeImport} className="btn-secondary">Cancel</button>
+                  <button
+                    onClick={handleImportSubmit}
+                    disabled={importBusy || importRows.filter(r => !r.error).length === 0}
+                    className="btn-primary disabled:opacity-40"
+                  >
+                    {importBusy
+                      ? 'Importing…'
+                      : `Import ${importRows.filter(r => !r.error).length} case${importRows.filter(r => !r.error).length !== 1 ? 's' : ''}`}
+                  </button>
+                </>
+              )}
+              {importStep === 'done' && (
+                <button onClick={closeImport} className="btn-primary">Done</button>
+              )}
+              {importStep === 'upload' && (
+                <button onClick={closeImport} className="btn-secondary">Cancel</button>
+              )}
             </div>
           </div>
         </div>

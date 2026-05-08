@@ -3,6 +3,7 @@ import {
   listTestCases, createTestCase, getTestCase,
   updateTestCase, transitionStatus,
   deleteTestCase, markForDeletion, copyTestCase, moveTestCase,
+  bulkImportTestCases,
 } from '../controllers/testCaseController';
 import { authenticate, requireRole } from '../middleware/auth';
 
@@ -18,5 +19,6 @@ router.post('/:id/transition', requireRole('ADMIN', 'QA', 'PO'), transitionStatu
 router.post('/:id/mark-deletion', requireRole('ADMIN', 'QA'), markForDeletion);
 router.post('/:id/copy', requireRole('ADMIN', 'QA'), copyTestCase);
 router.post('/:id/move', requireRole('ADMIN', 'QA'), moveTestCase);
+router.post('/bulk-import', requireRole('ADMIN', 'QA'), bulkImportTestCases);
 
 export default router;

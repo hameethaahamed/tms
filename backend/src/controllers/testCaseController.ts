@@ -215,6 +215,63 @@ export async function moveTestCase(req: AuthRequest, res: Response) {
   res.json(updated);
 }
 
+const VALID_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+const VALID_TEMPLATES  = ['STEPS', 'TEXT', 'EXPLORATORY', 'BDD'];
+const VALID_TYPES      = ['FUNCTIONAL', 'REGRESSION', 'PERFORMANCE', 'USABILITY', 'SECURITY', 'SMOKE', 'SANITY'];
+
+export async function bulkImportTestCases(req: AuthRequest, res: Response) {
+  const { projectId, cases: rows } = req.body as {
+    projectId?: string;
+    cases: Array<{
+      title: string;
+      priority?: string; template?: string; testType?: string;
+      category?: string; tags?: string[]; sectionId?: string | null;
+      description?: string; steps?: unknown[]; expectedResult?: string;
+      references?: string[];
+    }>;
+  };
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    res.status(400).json({ error: 'No rows provided' });
+    return;
+  }
+
+  let imported = 0;
+  const errors: { row: number; error: string }[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.title?.trim()) { errors.push({ row: i + 1, error: 'Title is required' }); continue; }
+    try {
+      const seqRows = await prisma.$queryRaw<Array<{ maxSeq: number | null }>>`SELECT MAX("seqId") as "maxSeq" FROM "TestCase"`;
+      const nextSeqId = (Number(seqRows[0]?.maxSeq) || 0) + 1;
+      await prisma.testCase.create({
+        data: {
+          seqId: nextSeqId,
+          title: row.title.trim(),
+          description: row.description || null,
+          steps: JSON.stringify(row.steps || []),
+          expectedResult: row.expectedResult || '',
+          tags: JSON.stringify(row.tags || []),
+          references: JSON.stringify(row.references || []),
+          priority:  VALID_PRIORITIES.includes(row.priority ?? '') ? row.priority! : 'MEDIUM',
+          template:  VALID_TEMPLATES.includes(row.template ?? '')   ? row.template!  : 'STEPS',
+          testType:  VALID_TYPES.includes(row.testType ?? '')        ? row.testType!  : 'FUNCTIONAL',
+          category: row.category || null,
+          projectId: projectId || null,
+          sectionId: row.sectionId || null,
+          createdById: req.user!.id,
+        },
+      });
+      imported++;
+    } catch (err) {
+      errors.push({ row: i + 1, error: String(err) });
+    }
+  }
+
+  res.json({ imported, errors });
+}
+
 // Keep legacy handlers for backward compat (routes still import them)
 export async function submitForQA(req: AuthRequest, res: Response) {
   return transitionStatus(req, res);
