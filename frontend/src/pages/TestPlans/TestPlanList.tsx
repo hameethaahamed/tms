@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTitle } from '../../hooks/useTitle';
 
 interface Plan {
   id: string; name: string; environment: string; status: string;
@@ -12,6 +13,7 @@ interface Plan {
 const ENVS = ['DEV', 'QA', 'STAGING', 'PROD'];
 
 export default function TestPlanList() {
+  useTitle('Test Plans');
   const { projectId } = useParams<{ projectId: string }>();
   const { user } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);

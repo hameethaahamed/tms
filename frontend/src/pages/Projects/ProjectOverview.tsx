@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
+import { useTitle } from '../../hooks/useTitle';
 import StatusBadge from '../../components/StatusBadge';
 import { useProject } from '../../contexts/ProjectContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -66,6 +67,7 @@ type Tab = 'suites' | 'runs' | 'plans';
 
 
 export default function ProjectOverview() {
+  useTitle('Project Overview');
   const { projectId } = useParams<{ projectId: string }>();
   useProject();
   const { user } = useAuth();

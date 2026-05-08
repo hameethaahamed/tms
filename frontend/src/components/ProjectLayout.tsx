@@ -54,7 +54,7 @@ function ProjectSidebarContent() {
     <aside className="w-56 bg-white border-r border-gray-200 flex flex-col h-screen">
       {/* Branding */}
       <div className="px-5 py-4 border-b border-gray-200">
-        <h1 className="text-lg font-bold text-blue-600">TestMan</h1>
+        <h1 className="text-lg font-bold text-blue-600">Testly</h1>
         <p className="text-xs text-gray-400 mt-0.5">Test Management</p>
       </div>
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import client from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTitle } from '../../hooks/useTitle';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
 
@@ -48,6 +49,7 @@ const REVIEW_LABEL: Record<string, string> = {
 };
 
 export default function ProjectTodo() {
+  useTitle('Todo');
   const { projectId } = useParams<{ projectId: string }>();
   const { user } = useAuth();
   const [data, setData] = useState<TodoData | null>(null);

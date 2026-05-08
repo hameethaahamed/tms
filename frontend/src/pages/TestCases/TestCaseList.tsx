@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
+import { useTitle } from '../../hooks/useTitle';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface Section {
@@ -43,33 +44,51 @@ function getSubtreeIds(sec: Section): Set<string> {
   return ids;
 }
 
-// ── Section sidebar tree (read-only navigation) ───────────────────────────────
+// ── Section sidebar tree (navigation + drop target) ──────────────────────────
 
-function SectionTree({ sections, selectedId, onSelect, depth = 0 }: {
+const NO_SECTION_DROP_ID = '__no_section__';
+
+function SectionTree({ sections, selectedId, onSelect, depth = 0, dropTargetId, onDragOver, onDragLeave, onDrop }: {
   sections: Section[]; selectedId: string | null;
   onSelect: (id: string | null) => void; depth?: number;
+  dropTargetId: string | null;
+  onDragOver: (id: string) => void;
+  onDragLeave: () => void;
+  onDrop: (id: string | null) => void;
 }) {
   return (
     <>
       {sections.map((s) => {
         const total = countAllTcs(s);
+        const isTarget = dropTargetId === s.id;
         return (
           <div key={s.id}>
             <button
               onClick={() => onSelect(selectedId === s.id ? null : s.id)}
+              onDragOver={(e) => { e.preventDefault(); onDragOver(s.id); }}
+              onDragLeave={onDragLeave}
+              onDrop={(e) => { e.preventDefault(); onDrop(s.id); }}
               className={`w-full text-left flex items-center gap-1 py-1.5 rounded-lg text-sm transition-colors ${
-                selectedId === s.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-600 hover:bg-gray-100'
+                isTarget
+                  ? 'bg-blue-200 border border-blue-400 text-blue-800 font-medium'
+                  : selectedId === s.id
+                    ? 'bg-blue-100 text-blue-800 font-medium'
+                    : 'text-gray-600 hover:bg-gray-100'
               }`}
               style={{ paddingLeft: `${8 + depth * 16}px`, paddingRight: '8px' }}
             >
               <span className="text-gray-400 text-xs w-4 shrink-0">{s.children.length > 0 ? '▾' : ' '}</span>
               <span className="truncate flex-1 select-none">
                 {s.name}
-                <span className="text-gray-400 font-normal ml-1">({total})</span>
+                <span className={`font-normal ml-1 ${isTarget ? 'text-blue-600' : 'text-gray-400'}`}>({total})</span>
               </span>
+              {isTarget && <span className="shrink-0 text-blue-500 text-xs ml-1">↙</span>}
             </button>
             {s.children.length > 0 && (
-              <SectionTree sections={s.children} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />
+              <SectionTree
+                sections={s.children} selectedId={selectedId} onSelect={onSelect} depth={depth + 1}
+                dropTargetId={dropTargetId} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+              />
             )}
           </div>
         );
@@ -81,6 +100,7 @@ function SectionTree({ sections, selectedId, onSelect, depth = 0 }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function TestCaseList() {
+  useTitle('Test Cases');
   const { projectId } = useParams<{ projectId: string }>();
   const { user } = useAuth();
   const [cases, setCases] = useState<TestCase[]>([]);
@@ -109,14 +129,17 @@ export default function TestCaseList() {
   const base = projectId ? `/projects/${projectId}` : '';
   const dragTcId = useRef<string | null>(null);
   const [dropTargetSectionId, setDropTargetSectionId] = useState<string | null>(null);
+  const [draggingTcId, setDraggingTcId] = useState<string | null>(null);
 
   async function handleDrop(targetSectionId: string | null) {
     if (!dragTcId.current) return;
     const tcId = dragTcId.current;
     dragTcId.current = null;
+    setDraggingTcId(null);
     setDropTargetSectionId(null);
-    await client.post(`/test-cases/${tcId}/move`, { sectionId: targetSectionId });
-    setCases(prev => prev.map(c => c.id === tcId ? { ...c, sectionId: targetSectionId } : c));
+    const resolvedId = targetSectionId === NO_SECTION_DROP_ID ? null : targetSectionId;
+    await client.post(`/test-cases/${tcId}/move`, { sectionId: resolvedId });
+    setCases(prev => prev.map(c => c.id === tcId ? { ...c, sectionId: resolvedId } : c));
   }
 
   function toggleCheck(id: string) {
@@ -255,9 +278,10 @@ export default function TestCaseList() {
       <tr
         key={tc.id}
         draggable
-        onDragStart={() => { dragTcId.current = tc.id; }}
-        onDragEnd={() => { dragTcId.current = null; setDropTargetSectionId(null); }}
-        className={`border-b border-gray-50 transition-colors ${
+        onDragStart={() => { dragTcId.current = tc.id; setDraggingTcId(tc.id); }}
+        onDragEnd={() => { dragTcId.current = null; setDraggingTcId(null); setDropTargetSectionId(null); }}
+        className={`border-b border-gray-50 transition-colors cursor-grab active:cursor-grabbing ${
+          draggingTcId === tc.id ? 'opacity-40' :
           isChecked ? 'bg-blue-50/60' : isActive ? 'bg-blue-50' : 'hover:bg-gray-50'
         }`}
         onClick={() => setSelectedTcId(prev => prev === tc.id ? null : tc.id)}
@@ -380,10 +404,18 @@ export default function TestCaseList() {
         {sectionGroups}
         {uncategorized.length > 0 && (
           <>
-            <tr className="border-b border-gray-100">
-              <td colSpan={totalCols + 1} className="px-4 py-2.5 bg-gray-50/80">
+            <tr
+              className={`border-b border-gray-100 transition-colors ${dropTargetSectionId === NO_SECTION_DROP_ID ? 'bg-orange-50' : 'bg-gray-50/80'}`}
+              onDragOver={(e) => { e.preventDefault(); setDropTargetSectionId(NO_SECTION_DROP_ID); }}
+              onDragLeave={() => setDropTargetSectionId(null)}
+              onDrop={() => handleDrop(NO_SECTION_DROP_ID)}
+            >
+              <td colSpan={totalCols + 1} className="px-4 py-2.5">
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">No Section</span>
                 <span className="ml-1.5 text-xs text-gray-400 font-normal">({uncategorized.length})</span>
+                {dropTargetSectionId === NO_SECTION_DROP_ID && (
+                  <span className="ml-2 text-xs text-orange-600 font-medium">Drop here</span>
+                )}
               </td>
             </tr>
             {uncategorized.map(tc => renderTcRow(tc))}
@@ -425,7 +457,28 @@ export default function TestCaseList() {
             {sections.length === 0 ? (
               <p className="text-xs text-gray-400 px-2 py-2">No sections yet.</p>
             ) : (
-              <SectionTree sections={sections} selectedId={selectedSectionId} onSelect={setSelectedSectionId} />
+              <SectionTree
+                sections={sections} selectedId={selectedSectionId} onSelect={setSelectedSectionId}
+                dropTargetId={dropTargetSectionId}
+                onDragOver={(id) => setDropTargetSectionId(id)}
+                onDragLeave={() => setDropTargetSectionId(null)}
+                onDrop={(id) => handleDrop(id)}
+              />
+            )}
+            {/* No Section drop zone */}
+            {draggingTcId && (
+              <div
+                className={`mt-2 px-2 py-1.5 rounded-lg border border-dashed text-xs transition-colors select-none ${
+                  dropTargetSectionId === NO_SECTION_DROP_ID
+                    ? 'bg-orange-50 border-orange-400 text-orange-600 font-medium'
+                    : 'border-gray-300 text-gray-400 hover:border-gray-400'
+                }`}
+                onDragOver={(e) => { e.preventDefault(); setDropTargetSectionId(NO_SECTION_DROP_ID); }}
+                onDragLeave={() => setDropTargetSectionId(null)}
+                onDrop={(e) => { e.preventDefault(); handleDrop(NO_SECTION_DROP_ID); }}
+              >
+                {dropTargetSectionId === NO_SECTION_DROP_ID ? '↙ Drop to remove section' : '⊘ No Section'}
+              </div>
             )}
           </div>
         </div>

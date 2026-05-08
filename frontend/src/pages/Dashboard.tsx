@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { useTitle } from '../hooks/useTitle';
 
 interface ProjectCard {
   id: string; name: string; description: string | null; type: string;
@@ -64,6 +65,7 @@ function timeAgo(iso: string): string {
 }
 
 export default function Dashboard() {
+  useTitle('Dashboard');
   const { user } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectCard[]>([]);

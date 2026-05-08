@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import client from '../../api/client';
 import { useProject } from '../../contexts/ProjectContext';
+import { useTitle } from '../../hooks/useTitle';
 
 interface GroupCount { _count: { id: number } }
 interface CaseByStatus  extends GroupCount { status: string }
@@ -73,6 +74,7 @@ function BarChart({
 }
 
 export default function ProjectReports() {
+  useTitle('Reports');
   const { projectId } = useParams<{ projectId: string }>();
   const { project } = useProject();
   const [data, setData] = useState<ReportData | null>(null);

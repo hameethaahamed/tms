@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
+import { useTitle } from '../../hooks/useTitle';
 
 interface Run {
   id: string; name: string; status: string;
@@ -12,6 +13,7 @@ interface Run {
 }
 
 export default function TestRunList() {
+  useTitle('Test Runs');
   const { projectId } = useParams<{ projectId: string }>();
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);

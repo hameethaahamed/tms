@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import client from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTitle } from '../../hooks/useTitle';
 
 interface Suite {
   id: string; name: string; description: string | null; isDefault: boolean;
@@ -10,6 +11,7 @@ interface Suite {
 }
 
 export default function TestSuiteList() {
+  useTitle('Test Suites');
   const { projectId } = useParams<{ projectId: string }>();
   const { user } = useAuth();
   const [suites, setSuites] = useState<Suite[]>([]);

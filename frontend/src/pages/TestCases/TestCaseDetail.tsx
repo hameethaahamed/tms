@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
+import { useTitle } from '../../hooks/useTitle';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface TestCase {
@@ -43,6 +44,7 @@ function ConfirmModal({ title, message, onConfirm, onCancel }: {
 }
 
 export default function TestCaseDetail() {
+  useTitle('Test Case Detail');
   const { projectId, id } = useParams<{ projectId: string; id: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -83,9 +85,25 @@ export default function TestCaseDetail() {
 
   if (!tc) return <div className="p-8 text-gray-400">Loading…</div>;
 
-  const steps: string[]    = JSON.parse(tc.steps);
+  const rawSteps           = JSON.parse(tc.steps || '[]');
   const tags: string[]     = JSON.parse(tc.tags);
   const refs: string[]     = JSON.parse(tc.references || '[]');
+
+  // Parse steps based on template
+  interface StepItem { description: string; screenshots: string[]; expectedResult: string; expectedScreenshots: string[] }
+  interface BDDScenario { scenario: string; given: string; when: string; then: string }
+  function normaliseStep(s: unknown): StepItem {
+    if (typeof s === 'string') return { description: s, screenshots: [], expectedResult: '', expectedScreenshots: [] };
+    const o = s as Record<string, unknown>;
+    return {
+      description: (o.description as string) ?? '',
+      screenshots: (o.screenshots as string[]) ?? [],
+      expectedResult: (o.expectedResult as string) ?? '',
+      expectedScreenshots: (o.expectedScreenshots as string[]) ?? [],
+    };
+  }
+  const stepsItems: StepItem[]     = tc.template === 'STEPS' && rawSteps.length > 0 ? rawSteps.map(normaliseStep) : [];
+  const bddScenarios: BDDScenario[] = tc.template === 'BDD'   && rawSteps.length > 0 && typeof rawSteps[0] === 'object' ? rawSteps : [];
 
   const canEdit        = ['ADMIN', 'QA'].includes(user?.role ?? '');
   const canTransition  = ['ADMIN', 'QA', 'PO'].includes(user?.role ?? '');
@@ -146,40 +164,155 @@ export default function TestCaseDetail() {
 
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2 space-y-4">
-          {tc.description && (
-            <div className="card p-5">
-              <h3 className="text-sm font-semibold text-gray-700 mb-2">Description</h3>
-              <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.description}</p>
-            </div>
-          )}
 
-          {/* Steps / content */}
-          {steps.length > 0 && (
-            <div className="card p-5">
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">
-                {tc.template === 'BDD' ? 'Given / When / Then' :
-                 tc.template === 'EXPLORATORY' ? 'Session Notes' :
-                 tc.template === 'TEXT' ? 'Test Description' : 'Test Steps'}
-              </h3>
-              {tc.template === 'STEPS' || tc.template === 'BDD' ? (
-                <ol className="space-y-2">
-                  {steps.map((step, i) => (
-                    <li key={i} className="flex gap-3 text-sm">
-                      <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs flex items-center justify-center font-medium mt-0.5">{i + 1}</span>
-                      <span className="text-gray-700">{step}</span>
-                    </li>
+          {/* ── TEXT template ─────────────────────────────────────── */}
+          {tc.template === 'TEXT' && (<>
+            {tc.description && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Precondition</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.description}</p>
+              </div>
+            )}
+            {rawSteps[0] && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Steps</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{rawSteps[0]}</p>
+              </div>
+            )}
+            {tc.expectedResult && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Expected Result</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.expectedResult}</p>
+              </div>
+            )}
+          </>)}
+
+          {/* ── STEPS template ────────────────────────────────────── */}
+          {tc.template === 'STEPS' && (<>
+            {tc.description && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Precondition</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.description}</p>
+              </div>
+            )}
+            {stepsItems.length > 0 && (
+              <div className="card overflow-hidden">
+                <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
+                  <h3 className="text-sm font-semibold text-gray-700">Steps</h3>
+                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium text-gray-500 w-8">#</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-500">Step</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-500 w-56">Expected Result</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {stepsItems.map((step, i) => (
+                      <tr key={i} className="align-top hover:bg-gray-50">
+                        <td className="px-3 py-3 text-center">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold">{i + 1}</span>
+                        </td>
+                        <td className="px-3 py-3">
+                          <p className="text-gray-800 font-medium whitespace-pre-wrap">{step.description}</p>
+                          {step.screenshots.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {step.screenshots.map((src, si) => (
+                                <a key={si} href={src} target="_blank" rel="noreferrer">
+                                  <img src={src} alt={`screenshot ${si + 1}`}
+                                    className="h-14 w-20 object-cover rounded border border-gray-200 hover:opacity-80 transition-opacity"
+                                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {step.expectedResult && (
+                            <p className="text-green-700 bg-green-50 rounded px-2 py-1 text-xs whitespace-pre-wrap">{step.expectedResult}</p>
+                          )}
+                          {step.expectedScreenshots.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {step.expectedScreenshots.map((src, si) => (
+                                <a key={si} href={src} target="_blank" rel="noreferrer">
+                                  <img src={src} alt={`expected screenshot ${si + 1}`}
+                                    className="h-14 w-20 object-cover rounded border border-gray-200 hover:opacity-80 transition-opacity"
+                                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                          {!step.expectedResult && step.expectedScreenshots.length === 0 && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {tc.expectedResult && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Overall Expected Result</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.expectedResult}</p>
+              </div>
+            )}
+          </>)}
+
+          {/* ── EXPLORATORY template ──────────────────────────────── */}
+          {tc.template === 'EXPLORATORY' && (<>
+            {tc.description && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Mission</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.description}</p>
+              </div>
+            )}
+            {tc.expectedResult && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Goals</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.expectedResult}</p>
+              </div>
+            )}
+          </>)}
+
+          {/* ── BDD template ──────────────────────────────────────── */}
+          {tc.template === 'BDD' && (<>
+            {tc.description && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Precondition</h3>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.description}</p>
+              </div>
+            )}
+            {bddScenarios.length > 0 && (
+              <div className="card p-5">
+                <h3 className="text-sm font-semibold text-gray-700 mb-4">BDD Scenarios</h3>
+                <div className="space-y-4">
+                  {bddScenarios.map((sc, i) => (
+                    <div key={i} className="border border-gray-200 rounded-lg p-4 bg-gray-50/50">
+                      {sc.scenario && (
+                        <p className="text-sm font-semibold text-gray-700 mb-3">
+                          Scenario {i + 1}: {sc.scenario}
+                        </p>
+                      )}
+                      <div className="space-y-2 text-sm">
+                        {sc.given && (
+                          <p><span className="font-semibold text-green-700">Given </span><span className="text-gray-700">{sc.given}</span></p>
+                        )}
+                        {sc.when && (
+                          <p><span className="font-semibold text-blue-700">When </span><span className="text-gray-700">{sc.when}</span></p>
+                        )}
+                        {sc.then && (
+                          <p><span className="font-semibold text-purple-700">Then </span><span className="text-gray-700">{sc.then}</span></p>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                </ol>
-              ) : (
-                <p className="text-sm text-gray-600 whitespace-pre-wrap">{steps[0]}</p>
-              )}
-            </div>
-          )}
-
-          <div className="card p-5">
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">Expected Result</h3>
-            <p className="text-sm text-gray-600 whitespace-pre-wrap">{tc.expectedResult}</p>
-          </div>
+                </div>
+              </div>
+            )}
+          </>)}
 
           {refs.length > 0 && (
             <div className="card p-5">

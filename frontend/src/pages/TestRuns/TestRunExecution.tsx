@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
+import { useTitle } from '../../hooks/useTitle';
 import { useAuth } from '../../contexts/AuthContext';
 
 /* ── colour maps ─────────────────────────────────────────────────────────── */
@@ -45,6 +46,7 @@ interface Run {
 
 /* ── component ───────────────────────────────────────────────────────────── */
 export default function TestRunExecution() {
+  useTitle('Test Run');
   const { projectId, runId } = useParams<{ projectId: string; runId: string }>();
   const id = runId;
   const { user } = useAuth();

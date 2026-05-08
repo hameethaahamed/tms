@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTitle } from '../../hooks/useTitle';
 
 interface Project {
   id: string; name: string; description: string | null; type: string;
@@ -16,6 +17,7 @@ function TypeBadge({ type }: { type: string }) {
 }
 
 export default function ProjectList() {
+  useTitle('Projects');
   const { user } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
