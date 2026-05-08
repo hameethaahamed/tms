@@ -1,0 +1,191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─── Project (master level) ────────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  type        String   @default("SINGLE_REPO") // SINGLE_REPO | MULTI_SUITE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  suites     TestSuite[]
+  plans      TestPlan[]
+  testCases  TestCase[]
+}
+
+// ─── Section (folder hierarchy inside a suite) ────────────────────────────
+
+model Section {
+  id       String   @id @default(cuid())
+  name     String
+  order    Int      @default(0)
+  depth    Int      @default(0)
+  suiteId  String
+  suite    TestSuite @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+  parentId String?
+  parent   Section?  @relation("SectionTree", fields: [parentId], references: [id])
+  children Section[] @relation("SectionTree")
+  createdAt DateTime @default(now())
+
+  testCases TestCase[]
+}
+
+// ─── User ──────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      String   @default("QA")
+  createdAt DateTime @default(now())
+
+  testCasesCreated    TestCase[] @relation("CreatedBy")
+  testCasesAssigned   TestCase[] @relation("AssignedTo")
+  testCasesReviewed   TestCase[] @relation("ReviewedBy")
+  testCasesQAReviewed TestCase[] @relation("QAReviewedBy")
+  testCasesPOReviewed TestCase[] @relation("POReviewedBy")
+  testRuns            TestRun[]
+}
+
+// ─── TestCase ──────────────────────────────────────────────────────────────
+
+model TestCase {
+  id             String   @id @default(cuid())
+  seqId          Int      @unique
+  title          String
+  description    String?
+  steps          String   @default("[]")
+  expectedResult String
+  priority       String   @default("MEDIUM")
+  status         String   @default("DRAFT")
+  template       String   @default("STEPS")   // TEXT | STEPS | EXPLORATORY | BDD
+  testType       String   @default("FUNCTIONAL") // FUNCTIONAL | REGRESSION | PERFORMANCE | USABILITY | SECURITY | SMOKE | SANITY
+  category       String?
+  tags           String   @default("[]")
+  references     String   @default("[]")       // JSON array of reference strings
+  markedForDeletion Boolean @default(false)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  sectionId String?
+  section   Section? @relation(fields: [sectionId], references: [id])
+
+  createdById    String
+  createdBy      User   @relation("CreatedBy", fields: [createdById], references: [id])
+
+  assignedToId   String?
+  assignedTo     User?  @relation("AssignedTo", fields: [assignedToId], references: [id])
+
+  reviewedById   String?
+  reviewedBy     User?  @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  reviewComment  String?
+
+  // Legacy fields kept for existing data
+  qaReviewedById String?
+  qaReviewedBy   User?  @relation("QAReviewedBy", fields: [qaReviewedById], references: [id])
+  qaComment      String?
+
+  poReviewedById String?
+  poReviewedBy   User?  @relation("POReviewedBy", fields: [poReviewedById], references: [id])
+  poComment      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  suiteItems TestSuiteItem[]
+  runResults TestRunResult[]
+}
+
+// ─── TestSuite ─────────────────────────────────────────────────────────────
+
+model TestSuite {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isDefault   Boolean  @default(false) // auto-created for SINGLE_REPO projects
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sections   Section[]
+  items      TestSuiteItem[]
+  planSuites TestPlanSuite[]
+}
+
+model TestSuiteItem {
+  id         String    @id @default(cuid())
+  suiteId    String
+  suite      TestSuite @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+  testCaseId String
+  testCase   TestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  order      Int       @default(0)
+
+  @@unique([suiteId, testCaseId])
+}
+
+// ─── TestPlan ──────────────────────────────────────────────────────────────
+
+model TestPlan {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  environment String    @default("QA")
+  status      String    @default("DRAFT")
+  startDate   DateTime?
+  endDate     DateTime?
+  projectId   String?
+  project     Project?  @relation(fields: [projectId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  suites TestPlanSuite[]
+  runs   TestRun[]
+}
+
+model TestPlanSuite {
+  id      String    @id @default(cuid())
+  planId  String
+  plan    TestPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  suiteId String
+  suite   TestSuite @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, suiteId])
+}
+
+// ─── TestRun ───────────────────────────────────────────────────────────────
+
+model TestRun {
+  id           String    @id @default(cuid())
+  name         String
+  planId       String
+  plan         TestPlan  @relation(fields: [planId], references: [id])
+  status       String    @default("NOT_STARTED")
+  assignedToId String?
+  assignedTo   User?     @relation(fields: [assignedToId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  results TestRunResult[]
+}
+
+model TestRunResult {
+  id         String    @id @default(cuid())
+  runId      String
+  run        TestRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  testCaseId String
+  testCase   TestCase  @relation(fields: [testCaseId], references: [id])
+  status     String    @default("PENDING")
+  comment    String?
+  executedAt DateTime?
+}

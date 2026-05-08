@@ -1,0 +1,25 @@
+version: '3.9'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - '4000:4000'
+    environment:
+      DATABASE_URL: file:./dev.db
+      JWT_SECRET: dev-secret-change-in-prod
+      PORT: 4000
+    volumes:
+      - backend-db:/app/prisma
+    command: >
+      sh -c "npx prisma migrate deploy && npx ts-node prisma/seed.ts && node dist/server.js"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - '3000:80'
+    depends_on:
+      - backend
+
+volumes:
+  backend-db:
