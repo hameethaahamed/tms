@@ -1,4 +1,4 @@
-# TestMan — Test Management Tool
+# Testly — Test Management Tool
 
 A full-stack test management tool covering the complete QA lifecycle:
 **Create test cases → QA review → PO sign-off → Build suites → Plan → Execute → Report**
