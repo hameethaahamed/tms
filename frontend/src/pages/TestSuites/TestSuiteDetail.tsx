@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
@@ -27,6 +27,12 @@ interface FullTestCase {
   priority: string; status: string; category: string | null; tags: string;
 }
 
+interface FlatTestCase {
+  id: string; seqId: number; title: string; priority: string; status: string;
+  category: string | null; tags: string; sectionId: string | null;
+  section: { id: string; name: string } | null;
+}
+
 interface Suite {
   id: string; name: string; description: string | null; isDefault: boolean;
   items: SuiteItem[];
@@ -45,10 +51,6 @@ function flatAll(secs: Section[]): Section[] {
 
 function parseTags(json: string): string[] {
   try { return JSON.parse(json) as string[]; } catch { return []; }
-}
-
-function countAllTcs(sec: Section): number {
-  return sec._count.testCases + sec.children.reduce((n, c) => n + countAllTcs(c), 0);
 }
 
 // ── SectionNode ───────────────────────────────────────────────────────────────
@@ -84,8 +86,6 @@ function SectionNode({
   const isRenaming = editingSectionId === section.id;
   const showForm = sectionFormParentId === section.id;
   const childIndent = 8 + (level + 1) * 16;
-  const total = countAllTcs(section);
-
   return (
     <div>
       <div
@@ -123,7 +123,7 @@ function SectionNode({
             title="Double-click to rename"
           >
             {section.name}
-            <span className="text-gray-400 font-normal ml-1">({total})</span>
+            <span className="text-gray-400 font-normal ml-1">({section._count.testCases})</span>
           </span>
         )}
 
@@ -187,10 +187,12 @@ export default function TestSuiteDetail() {
   const id = suiteId;
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [suite, setSuite] = useState<Suite | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
-  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
+  const [allCases, setAllCases] = useState<FlatTestCase[]>([]);
+  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(() => searchParams.get('section'));
   const [selectedTcId, setSelectedTcId] = useState<string | null>(null);
 
   // section form
@@ -210,6 +212,15 @@ export default function TestSuiteDetail() {
   // TC detail cache
   const [detailCache, setDetailCache] = useState<Record<string, FullTestCase>>({});
 
+  // bulk actions
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [showBulkMove, setShowBulkMove] = useState(false);
+  const [showBulkCopy, setShowBulkCopy] = useState(false);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [bulkMoveSection, setBulkMoveSection] = useState('');
+  const [bulkCopySection, setBulkCopySection] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const base = projectId ? `/projects/${projectId}` : '';
   const canEdit = ['ADMIN', 'QA'].includes(user?.role ?? '');
 
@@ -221,8 +232,12 @@ export default function TestSuiteDetail() {
     const { data } = await client.get(`/test-suites/${id}/sections`);
     setSections(data);
   }
+  async function loadCases() {
+    const { data } = await client.get(`/test-cases?suiteId=${id}`);
+    setAllCases(data);
+  }
 
-  useEffect(() => { loadSuite(); loadSections(); }, [id]);
+  useEffect(() => { loadSuite(); loadSections(); loadCases(); }, [id]);
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -271,9 +286,62 @@ export default function TestSuiteDetail() {
   // ── TC actions ──────────────────────────────────────────────────────────────
 
   async function removeCase(caseId: string) {
-    await client.delete(`/test-suites/${id}/cases/${caseId}`);
+    await client.put(`/test-cases/${caseId}`, { sectionId: null });
     if (selectedTcId === caseId) setSelectedTcId(null);
-    await Promise.all([loadSuite(), loadSections()]);
+    await Promise.all([loadCases(), loadSections()]);
+  }
+
+  function toggleCheck(tcId: string) {
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      next.has(tcId) ? next.delete(tcId) : next.add(tcId);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    const visibleIds = visibleItems.map(i => i.testCase.id);
+    const allChecked = visibleIds.length > 0 && visibleIds.every(id => checkedIds.has(id));
+    if (allChecked) {
+      setCheckedIds(prev => { const n = new Set(prev); visibleIds.forEach(id => n.delete(id)); return n; });
+    } else {
+      setCheckedIds(prev => { const n = new Set(prev); visibleIds.forEach(id => n.add(id)); return n; });
+    }
+  }
+
+  async function handleBulkMove() {
+    if (checkedIds.size === 0) return;
+    setBulkBusy(true);
+    await Promise.all([...checkedIds].map(tcId =>
+      client.post(`/test-cases/${tcId}/move`, { sectionId: bulkMoveSection || null })
+    ));
+    setCheckedIds(new Set());
+    setShowBulkMove(false);
+    setBulkBusy(false);
+    await Promise.all([loadCases(), loadSections()]);
+  }
+
+  async function handleBulkCopy() {
+    if (checkedIds.size === 0) return;
+    setBulkBusy(true);
+    for (const tcId of checkedIds) {
+      await client.post(`/test-cases/${tcId}/copy`, { sectionId: bulkCopySection || null });
+    }
+    setCheckedIds(new Set());
+    setShowBulkCopy(false);
+    setBulkBusy(false);
+    await loadCases();
+  }
+
+  async function handleBulkDelete() {
+    if (checkedIds.size === 0) return;
+    setBulkBusy(true);
+    await Promise.all([...checkedIds].map(tcId => client.delete(`/test-cases/${tcId}`)));
+    if (selectedTcId && checkedIds.has(selectedTcId)) setSelectedTcId(null);
+    setCheckedIds(new Set());
+    setShowBulkDelete(false);
+    setBulkBusy(false);
+    await Promise.all([loadCases(), loadSections()]);
   }
 
   async function openDetail(tcId: string) {
@@ -290,7 +358,7 @@ export default function TestSuiteDetail() {
 
   // ── Derived ─────────────────────────────────────────────────────────────────
 
-  const allItems = suite?.items ?? [];
+  const allItems: SuiteItem[] = allCases.map((tc) => ({ id: tc.id, testCase: tc }));
 
   function getSubtreeIds(sec: Section): Set<string> {
     const ids = new Set<string>();
@@ -299,12 +367,7 @@ export default function TestSuiteDetail() {
   }
 
   const visibleItems: SuiteItem[] = selectedSectionId
-    ? (() => {
-        const sec = flatAll(sections).find(s => s.id === selectedSectionId);
-        if (!sec) return [];
-        const ids = getSubtreeIds(sec);
-        return allItems.filter(i => i.testCase.sectionId && ids.has(i.testCase.sectionId));
-      })()
+    ? allItems.filter(i => i.testCase.sectionId === selectedSectionId)
     : allItems;
 
   const selectedSectionName = selectedSectionId
@@ -314,8 +377,12 @@ export default function TestSuiteDetail() {
   const selectedDetail = selectedTcId ? detailCache[selectedTcId] : null;
   const selectedTcItem = allItems.find(i => i.testCase.id === selectedTcId);
 
-  // Total columns: ID + Title + optional cols + actions
-  const totalCols = 2 + visibleCols.length + 1;
+  // checkbox + ID + Title + optional cols + actions
+  const totalCols = 2 + visibleCols.length + 2;
+
+  const allVisibleChecked = visibleItems.length > 0 && visibleItems.every(i => checkedIds.has(i.testCase.id));
+  const someVisibleChecked = visibleItems.some(i => checkedIds.has(i.testCase.id));
+  const flatSections = flatAll(sections).map(s => ({ id: s.id, label: ' '.repeat(s.depth * 2) + s.name }));
 
   if (!suite) return <div className="p-8 text-gray-400">Loading…</div>;
 
@@ -343,16 +410,20 @@ export default function TestSuiteDetail() {
   function renderTcRow(item: SuiteItem, indent = 0) {
     const tc = item.testCase;
     const isActive = selectedTcId === tc.id;
+    const isChecked = checkedIds.has(tc.id);
     const tags = parseTags(tc.tags);
 
     return (
       <tr
         key={item.id}
         className={`border-b border-gray-50 cursor-pointer transition-colors ${
-          isActive ? 'bg-blue-50' : 'hover:bg-gray-50'
+          isChecked ? 'bg-blue-50/60' : isActive ? 'bg-blue-50' : 'hover:bg-gray-50'
         }`}
         onClick={() => openDetail(tc.id)}
       >
+        <td className="pl-4 pr-2 py-3 w-8" onClick={(e) => { e.stopPropagation(); toggleCheck(tc.id); }}>
+          <input type="checkbox" checked={isChecked} readOnly className="rounded text-blue-600 cursor-pointer" />
+        </td>
         <td className="px-4 py-3 font-mono text-xs text-gray-400 whitespace-nowrap">
           TC-{String(tc.seqId).padStart(4, '0')}
         </td>
@@ -417,7 +488,7 @@ export default function TestSuiteDetail() {
               {sec.name}
             </span>
             <span className="ml-1.5 text-xs text-gray-400 font-normal">
-              ({directItems.length + childSections.reduce((n, c) => n + countAllTcs(c), 0)})
+              ({directItems.length})
             </span>
           </td>
         </tr>
@@ -440,27 +511,7 @@ export default function TestSuiteDetail() {
   // Build the full table body
   function renderTableBody(): JSX.Element {
     if (selectedSectionId) {
-      const sec = flatAll(sections).find(s => s.id === selectedSectionId);
-      if (!sec) return <></>;
-
-      if (sec.children.length === 0) {
-        return <>{visibleItems.map(item => renderTcRow(item))}</>;
-      }
-
-      // Show sub-section groups within the selected section
-      const directItems = visibleItems.filter(i => i.testCase.sectionId === selectedSectionId);
-      return (
-        <>
-          {directItems.map(item => renderTcRow(item))}
-          {sec.children.map(child => {
-            const childItems = visibleItems.filter(i => {
-              const childIds = getSubtreeIds(child);
-              return i.testCase.sectionId && childIds.has(i.testCase.sectionId);
-            });
-            return renderSectionGroup(child, childItems, 0);
-          })}
-        </>
-      );
+      return <>{visibleItems.map(item => renderTcRow(item))}</>;
     }
 
     // All Test Cases — group by section
@@ -543,7 +594,7 @@ export default function TestSuiteDetail() {
               }`}
             >
               <span>All Test Cases</span>
-              <span className="text-xs text-gray-400">{suite.items.length}</span>
+              <span className="text-xs text-gray-400">{allCases.length}</span>
             </button>
 
             {showSectionForm && !sectionFormParentId && (
@@ -616,6 +667,16 @@ export default function TestSuiteDetail() {
             </div>
           </div>
 
+          {checkedIds.size > 0 && (
+            <div className="flex items-center gap-3 px-4 py-2 bg-blue-50 border-b border-blue-100">
+              <span className="text-sm font-medium text-blue-800">{checkedIds.size} selected</span>
+              <button onClick={() => setShowBulkCopy(true)} disabled={bulkBusy} className="btn-secondary text-xs py-1">Copy</button>
+              <button onClick={() => setShowBulkMove(true)} disabled={bulkBusy} className="btn-secondary text-xs py-1">Move</button>
+              <button onClick={() => setShowBulkDelete(true)} disabled={bulkBusy} className="btn-secondary text-xs py-1 text-red-600 border-red-200 hover:bg-red-50">Delete</button>
+              <button onClick={() => setCheckedIds(new Set())} className="ml-auto text-xs text-gray-400 hover:text-gray-600">✕ Clear</button>
+            </div>
+          )}
+
           {visibleItems.length === 0 ? (
             <div className="p-8 text-center text-gray-400">
               <p className="text-sm">No test cases{selectedSectionId ? ' in this section' : ''}.</p>
@@ -630,6 +691,15 @@ export default function TestSuiteDetail() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
+                  <th className="pl-4 pr-2 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleChecked}
+                      ref={(el) => { if (el) el.indeterminate = someVisibleChecked && !allVisibleChecked; }}
+                      onChange={toggleAllVisible}
+                      className="rounded text-blue-600 cursor-pointer"
+                    />
+                  </th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600 w-24">ID</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Title</th>
                   {visibleCols.includes('priority') && <th className="text-left px-4 py-3 font-medium text-gray-600">Priority</th>}
@@ -728,6 +798,78 @@ export default function TestSuiteDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Bulk Copy modal ─────────────────────────────────────────────────── */}
+      {showBulkCopy && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-base font-semibold text-gray-900 mb-1">Copy Test Cases</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              {checkedIds.size} case{checkedIds.size !== 1 ? 's' : ''} will be copied to:
+            </p>
+            <div>
+              <label className="label text-xs">Target Section</label>
+              <select className="input" value={bulkCopySection} onChange={(e) => setBulkCopySection(e.target.value)}>
+                <option value="">— Same section —</option>
+                {flatSections.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button className="btn-primary flex-1 justify-center" disabled={bulkBusy} onClick={handleBulkCopy}>
+                {bulkBusy ? 'Copying…' : 'Copy'}
+              </button>
+              <button className="btn-secondary flex-1 justify-center" onClick={() => setShowBulkCopy(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bulk Move modal ──────────────────────────────────────────────────── */}
+      {showBulkMove && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-base font-semibold text-gray-900 mb-1">Move Test Cases</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              {checkedIds.size} case{checkedIds.size !== 1 ? 's' : ''} will be moved to:
+            </p>
+            <div>
+              <label className="label text-xs">Target Section</label>
+              <select className="input" value={bulkMoveSection} onChange={(e) => setBulkMoveSection(e.target.value)}>
+                <option value="">— No section —</option>
+                {flatSections.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button className="btn-primary flex-1 justify-center" disabled={bulkBusy} onClick={handleBulkMove}>
+                {bulkBusy ? 'Moving…' : 'Move'}
+              </button>
+              <button className="btn-secondary flex-1 justify-center" onClick={() => setShowBulkMove(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bulk Delete modal ────────────────────────────────────────────────── */}
+      {showBulkDelete && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+            <h3 className="text-base font-semibold text-gray-900 mb-2">Delete Test Cases?</h3>
+            <p className="text-sm text-gray-500 mb-5">
+              <span className="font-medium text-gray-700">{checkedIds.size} case{checkedIds.size !== 1 ? 's' : ''}</span> will be permanently deleted. This cannot be undone.
+            </p>
+            <div className="flex gap-2">
+              <button
+                className="btn-secondary flex-1 justify-center bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-50"
+                disabled={bulkBusy}
+                onClick={handleBulkDelete}
+              >
+                {bulkBusy ? 'Deleting…' : 'Delete'}
+              </button>
+              <button className="btn-secondary flex-1 justify-center" onClick={() => setShowBulkDelete(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
@@ -15,7 +16,7 @@ function escapeCSV(val: string): string {
   return val;
 }
 
-function parseCSVRow(line: string): string[] {
+function parseCSVRow(line: string, delimiter = ','): string[] {
   const result: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -24,7 +25,7 @@ function parseCSVRow(line: string): string[] {
     if (c === '"') {
       if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
       else inQuotes = !inQuotes;
-    } else if (c === ',' && !inQuotes) {
+    } else if (c === delimiter && !inQuotes) {
       result.push(current); current = '';
     } else { current += c; }
   }
@@ -32,26 +33,121 @@ function parseCSVRow(line: string): string[] {
   return result;
 }
 
-function parseCSV(text: string): Record<string, string>[] {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
-  if (lines.length < 2) return [];
-  const headers = parseCSVRow(lines[0]).map(h => h.trim());
-  return lines.slice(1).filter(l => l.trim()).map(line => {
-    const vals = parseCSVRow(line);
-    const obj: Record<string, string> = {};
-    headers.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim(); });
-    return obj;
-  });
-}
-
 const CSV_HEADERS = ['Title','Priority','Template','TestType','Category','Tags','Section','Precondition','Steps','ExpectedResult','References'];
 
 function generateSampleCSV(): string {
   const rows = [
-    ['Login with valid credentials','HIGH','STEPS','FUNCTIONAL','Authentication','smoke,regression','','User must be logged in','Navigate to /login;;Enter valid email;;Enter password;;Click Sign In','User is redirected to dashboard','JIRA-123'],
-    ['Forgot password flow','MEDIUM','TEXT','FUNCTIONAL','Authentication','regression','','User is on login page','Click Forgot Password, enter email, check inbox, click reset link','Password reset email is received',''],
+    ['Login with valid credentials','HIGH','STEPS','FUNCTIONAL','Authentication','smoke,regression','Authentication > Login','User must be logged in','Navigate to /login;;Enter valid email;;Enter password;;Click Sign In','User is redirected to dashboard','JIRA-123'],
+    ['Forgot password flow','MEDIUM','TEXT','FUNCTIONAL','Authentication','regression','Authentication > Password','User is on login page','Click Forgot Password, enter email, check inbox, click reset link','Password reset email is received',''],
+    ['Explore checkout edge cases','LOW','EXPLORATORY','FUNCTIONAL','Payments','exploratory','Payments > Exploratory','User is logged in with items in cart','Explore the checkout process and test edge cases like empty cart and expired session','No regressions found in checkout flow',''],
+    ['Customer places order','HIGH','BDD','FUNCTIONAL','Payments','regression','Payments > BDD','User is logged in;;Given the user has items in cart;;When the user proceeds to checkout;;And the user enters valid payment info;;Then the order is placed successfully','','Order confirmation is displayed','JIRA-456'],
   ];
   return [CSV_HEADERS.join(','), ...rows.map(r => r.map(escapeCSV).join(','))].join('\n');
+}
+
+// Excel column headers matching the utils/TMS Export.xlsx format
+const EXCEL_HEADERS = ['Title','Template','Type','Priority','Category','Section','Assigned To','Tags','References','Precondition','Step','Expected Result','Overall Expected Result'];
+
+function generateSampleXLSX(): void {
+  const rows: (string | number)[][] = [EXCEL_HEADERS];
+
+  // STEPS template — multi-row (each step is its own row)
+  rows.push(['Login with valid credentials','(Steps)','Functional','High','Authentication','Login > Smoke Tests','','smoke,regression','JIRA-123','User must be logged in','Navigate to /login','Login page is displayed','All login steps pass']);
+  rows.push(['','','','','','','','','','','Enter valid email and password','Credentials accepted','']);
+  rows.push(['','','','','','','','','','','Click Sign In','User redirected to dashboard','']);
+
+  // TEXT template — single row, step cell holds the prose body
+  rows.push(['Forgot password flow','(Text)','Functional','Medium','Authentication','Login > Text Tests','','regression','JIRA-124','User has a registered account','Click Forgot Password, enter email, submit form, open inbox and click reset link','','Password reset email received within 2 minutes']);
+
+  // EXPLORATORY template — single row, step cell holds the mission/charter
+  rows.push(['Explore checkout edge cases','(Exploratory)','Functional','Low','Payments','Payments > Exploratory','','exploratory','','User is logged in with items in cart','Explore the checkout process — test empty cart, invalid card, expired session, and concurrent orders','','No regressions found; edge cases documented']);
+
+  // BDD template — multi-row (each Given/When/Then is its own row)
+  rows.push(['Customer places order','(BDD)','Functional','High','Payments','Payments > BDD Tests','','regression','JIRA-456','User is logged in','Given the user has items in cart','Given condition is met','Order confirmation is displayed']);
+  rows.push(['','','','','','','','','','','When the user proceeds to checkout','Checkout page loads','']);
+  rows.push(['','','','','','','','','','','And the user enters valid payment info','Payment info accepted','']);
+  rows.push(['','','','','','','','','','','Then the order is placed successfully','Order ID is generated','']);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Style the header row (bold) via column widths
+  ws['!cols'] = EXCEL_HEADERS.map((_h, i) => ({
+    wch: [30, 14, 12, 10, 16, 28, 14, 20, 12, 28, 45, 35, 35][i] ?? 20,
+  }));
+
+  // Freeze header row
+  ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Test Cases');
+  XLSX.writeFile(wb, 'test-cases-sample.xlsx');
+}
+
+// TMS field definitions for column mapping
+const TMS_FIELDS: { key: string; label: string }[] = [
+  { key: '',                   label: '— Skip —' },
+  { key: 'title',              label: 'Title *' },
+  { key: 'priority',           label: 'Priority' },
+  { key: 'template',           label: 'Template' },
+  { key: 'testType',           label: 'Test Type' },
+  { key: 'category',           label: 'Category' },
+  { key: 'tags',               label: 'Tags (comma-separated)' },
+  { key: 'section',            label: 'Section / Path' },
+  { key: 'description',        label: 'Precondition / Description' },
+  // Single-row CSV format: steps delimited by ;;
+  { key: 'steps',              label: 'Steps (CSV — separated by ;;)' },
+  { key: 'expectedResult',     label: 'Expected Result / Overall Result' },
+  // Multi-row Excel format: one row per step
+  { key: 'stepDesc',           label: 'Step (Excel — one row per step)' },
+  { key: 'stepExpectedResult', label: 'Step Expected Result (per row)' },
+  { key: 'references',         label: 'References' },
+];
+
+const TMS_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+// Maps display template names (including Excel parens format) to internal enum values
+const TEMPLATE_NORMALIZE: Record<string, string> = {
+  steps: 'STEPS', '(steps)': 'STEPS',
+  text: 'TEXT', '(text)': 'TEXT',
+  exploratory: 'EXPLORATORY', '(exploratory)': 'EXPLORATORY',
+  bdd: 'BDD', '(bdd)': 'BDD',
+};
+
+function autoDetectColumnMap(headers: string[]): Record<string, string> {
+  const ALIASES: Record<string, string[]> = {
+    title:               ['title', 'name', 'test title', 'test name', 'case title', 'test case title'],
+    priority:            ['priority', 'test priority', 'severity', 'p'],
+    // 'type' is intentionally NOT in template to avoid conflict with testType
+    template:            ['template', 'case type'],
+    // 'type' maps to testType (matches Excel "Type" column)
+    testType:            ['testtype', 'test type', 'type'],
+    category:            ['category', 'module', 'area', 'component'],
+    tags:                ['tags', 'labels', 'label', 'tag'],
+    section:             ['section', 'folder', 'section/folder', 'suite', 'path', 'section path', 'sections'],
+    description:         ['precondition', 'description', 'pre-condition', 'prerequisite', 'preconditions'],
+    // CSV format: ;; delimited steps in one cell
+    steps:               ['steps', 'test steps', 'actions'],
+    // Excel format: one step per row — 'step' (singular) maps here
+    stepDesc:            ['step', 'step description', 'action'],
+    // Overall expected result (test-case level)
+    expectedResult:      ['expectedresult', 'overall expected result', 'overall result', 'test expected result'],
+    // Per-step expected result (Excel "Expected Result" column)
+    stepExpectedResult:  ['expected result', 'step expected result', 'expected', 'expected outcome', 'result'],
+    references:          ['references', 'reference', 'jira', 'links', 'link'],
+  };
+  const map: Record<string, string> = {};
+  const usedFields = new Set<string>();
+  for (const h of headers) {
+    const norm = h.toLowerCase().trim();
+    for (const [field, aliases] of Object.entries(ALIASES)) {
+      if (!usedFields.has(field) && aliases.includes(norm)) {
+        map[h] = field;
+        usedFields.add(field);
+        break;
+      }
+    }
+  }
+  return map;
 }
 
 interface Section {
@@ -83,6 +179,10 @@ const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 function parseTags(json: string): string[] {
   try { return JSON.parse(json) as string[]; } catch { return []; }
+}
+// Like parseTags but returns unknown[] — safe for steps which may contain objects
+function parseJSON(json: string): unknown[] {
+  try { return JSON.parse(json) as unknown[]; } catch { return []; }
 }
 
 function flatAll(secs: Section[]): Section[] {
@@ -181,11 +281,20 @@ export default function TestCaseList() {
   const [bulkBusy, setBulkBusy]               = useState(false);
 
   // Import / Export
-  const [showImport, setShowImport]     = useState(false);
-  const [importStep, setImportStep]     = useState<'upload' | 'preview' | 'done'>('upload');
-  const [importRows, setImportRows]     = useState<ImportRow[]>([]);
-  const [importResult, setImportResult] = useState<{ imported: number; errors: { row: number; error: string }[] } | null>(null);
-  const [importBusy, setImportBusy]     = useState(false);
+  const [showImport, setShowImport]         = useState(false);
+  const [importStep, setImportStep]         = useState<'upload' | 'column-map' | 'value-map' | 'preview' | 'done'>('upload');
+  const [importSettings, setImportSettings] = useState({ delimiter: ',', hasHeader: true });
+  const [importSuiteId, setImportSuiteId]   = useState('');
+  const [rawFileText, setRawFileText]       = useState('');
+  const [importFileName, setImportFileName] = useState('');
+  const [csvHeaders, setCsvHeaders]         = useState<string[]>([]);
+  const [csvRawRows, setCsvRawRows]         = useState<Record<string, string>[]>([]);
+  const [columnMap, setColumnMap]           = useState<Record<string, string>>({});
+  const [valueMap, setValueMap]             = useState<Record<string, string>>({});
+  const [importRows, setImportRows]         = useState<ImportRow[]>([]);
+  const [importResult, setImportResult]     = useState<{ imported: number; createdSections: number; errors: { row: number; error: string }[] } | null>(null);
+  const [importBusy, setImportBusy]         = useState(false);
+  const [isExcelFile, setIsExcelFile]       = useState(false);
 
   const canCreate = ['ADMIN', 'QA'].includes(user?.role ?? '');
   const base = projectId ? `/projects/${projectId}` : '';
@@ -299,48 +408,235 @@ export default function TestCaseList() {
 
   // ── Import ────────────────────────────────────────────────────────────────
 
+  // Derived: unique priority values present in the CSV for the mapped priority column
+  const uniquePriorityValues = useMemo(() => {
+    const col = Object.entries(columnMap).find(([, f]) => f === 'priority')?.[0];
+    if (!col) return [];
+    return [...new Set(csvRawRows.map(r => r[col] ?? '').filter(Boolean))];
+  }, [columnMap, csvRawRows]);
+
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const csvRows = parseCSV(reader.result as string);
-      const parsed: ImportRow[] = csvRows.map(row => {
-        const tpl = row.Template?.toUpperCase();
-        const template = ['STEPS','TEXT','EXPLORATORY','BDD'].includes(tpl) ? tpl : 'STEPS';
-        const stepsRaw = row.Steps || '';
-        let steps: unknown[];
-        if (template === 'STEPS') {
-          steps = stepsRaw.split(';;').filter(Boolean).map(s => ({ description: s.trim(), screenshots: [], expectedResult: '', expectedScreenshots: [] }));
-        } else if (template === 'TEXT') {
-          steps = stepsRaw ? [stepsRaw] : [];
-        } else { steps = []; }
-        const sectionName = row.Section?.trim() || '';
-        const sectionId = sectionName
-          ? (bulkMoveSections.find(s => s.label.toLowerCase() === sectionName.toLowerCase())?.id ?? null)
-          : null;
-        const ttRaw = row.TestType?.toUpperCase();
-        const testType = ['FUNCTIONAL','REGRESSION','PERFORMANCE','USABILITY','SECURITY','SMOKE','SANITY'].includes(ttRaw) ? ttRaw : 'FUNCTIONAL';
-        const prRaw = row.Priority?.toUpperCase();
-        const priority = ['LOW','MEDIUM','HIGH','CRITICAL'].includes(prRaw) ? prRaw : 'MEDIUM';
-        return {
-          title: row.Title?.trim() || '',
-          priority, template, testType,
-          category: row.Category?.trim() || '',
-          tags: row.Tags?.split(',').map(t => t.trim()).filter(Boolean) || [],
-          sectionId, sectionName,
-          description: row.Precondition?.trim() || '',
-          steps,
-          expectedResult: row.ExpectedResult?.trim() || '',
-          references: row.References?.split(';;').map(r => r.trim()).filter(Boolean) || [],
-          error: !row.Title?.trim() ? 'Title is required' : undefined,
-        };
-      });
-      setImportRows(parsed);
-      setImportStep('preview');
-    };
-    reader.readAsText(file);
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File exceeds 10 MB limit. Please split the file and try again.');
+      e.target.value = '';
+      return;
+    }
+    const name = file.name.toLowerCase();
+    const isXlsx = name.endsWith('.xlsx') || name.endsWith('.xls');
+    setIsExcelFile(isXlsx);
+    setImportFileName(file.name);
+
+    if (isXlsx) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const data = new Uint8Array(reader.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+        const headers = (rows[0] as unknown[]).map(h => String(h).trim()).filter(Boolean);
+        const dataRows = (rows.slice(1) as unknown[][]).filter(r =>
+          r.some(c => String(c).trim() !== '')
+        );
+        const rawRows: Record<string, string>[] = dataRows.map(row => {
+          const obj: Record<string, string> = {};
+          headers.forEach((h, i) => { obj[h] = String(row[i] ?? '').trim(); });
+          return obj;
+        });
+        setCsvHeaders(headers);
+        setCsvRawRows(rawRows);
+        setColumnMap(autoDetectColumnMap(headers));
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setRawFileText(reader.result as string);
+      };
+      reader.readAsText(file);
+    }
     e.target.value = '';
+  }
+
+  function handleUploadNext() {
+    if (isExcelFile) {
+      if (csvHeaders.length === 0) {
+        alert('The file appears to be empty or could not be parsed.');
+        return;
+      }
+      setImportStep('column-map');
+      return;
+    }
+    if (!rawFileText) return;
+    // Strip UTF-8 BOM if present
+    const text = rawFileText.replace(/^﻿/, '');
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
+    if (lines.length < 1 || (lines.length === 1 && !lines[0].trim())) {
+      alert('The file appears to be empty.');
+      return;
+    }
+    const delim = importSettings.delimiter;
+    const headerLine = importSettings.hasHeader ? lines[0] : null;
+    const headers = headerLine
+      ? parseCSVRow(headerLine, delim).map(h => h.trim()).filter(Boolean)
+      : lines[0].split(delim).map((_, i) => `Column ${i + 1}`);
+    if (headers.length === 0) {
+      alert('Could not detect any columns. Check the delimiter setting.');
+      return;
+    }
+    const dataLines = importSettings.hasHeader ? lines.slice(1) : lines;
+    const rawRows: Record<string, string>[] = dataLines.filter(l => l.trim()).map(line => {
+      const vals = parseCSVRow(line, delim);
+      const obj: Record<string, string> = {};
+      headers.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim(); });
+      return obj;
+    });
+    setCsvHeaders(headers);
+    setCsvRawRows(rawRows);
+    setColumnMap(autoDetectColumnMap(headers));
+    setImportStep('column-map');
+  }
+
+  function buildImportRows(): ImportRow[] {
+    const VALID_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+    const VALID_TEMPLATES  = ['STEPS', 'TEXT', 'EXPLORATORY', 'BDD'];
+    const VALID_TYPES      = ['FUNCTIONAL', 'REGRESSION', 'PERFORMANCE', 'USABILITY', 'SECURITY', 'SMOKE', 'SANITY'];
+
+    const fieldToCol: Record<string, string> = {};
+    for (const [col, field] of Object.entries(columnMap)) fieldToCol[field] = col;
+    const get = (row: Record<string, string>, field: string) => fieldToCol[field] ? (row[fieldToCol[field]] ?? '') : '';
+
+    // Normalize Excel section separator " / " → " > " expected by backend
+    function normalizeSection(raw: string): string {
+      return raw.replace(/\s*\/\s*/g, ' > ').trim();
+    }
+
+    // Normalize template: handles "(Steps)", "Steps", "STEPS", etc.
+    function normalizeTemplate(raw: string): string {
+      const mapped = TEMPLATE_NORMALIZE[raw.toLowerCase().trim()];
+      if (mapped && VALID_TEMPLATES.includes(mapped)) return mapped;
+      const upper = raw.toUpperCase().trim();
+      return VALID_TEMPLATES.includes(upper) ? upper : 'STEPS';
+    }
+
+    // Build the scalar fields for a test case from its header row
+    function buildBaseRow(row: Record<string, string>): ImportRow {
+      const rawTitle = get(row, 'title').trim();
+      const rawPriority = get(row, 'priority').trim();
+      const mappedPriority = (valueMap[rawPriority] || rawPriority).toUpperCase();
+      const priority = VALID_PRIORITIES.includes(mappedPriority) ? mappedPriority : 'MEDIUM';
+      const template = normalizeTemplate(get(row, 'template'));
+      const ttRaw = get(row, 'testType').toUpperCase();
+      const testType = VALID_TYPES.includes(ttRaw) ? ttRaw : 'FUNCTIONAL';
+      const sectionName = normalizeSection(get(row, 'section'));
+      const sectionId = sectionName
+        ? (bulkMoveSections.find(s => s.label.toLowerCase() === sectionName.toLowerCase())?.id ?? null)
+        : null;
+      const tagsRaw = get(row, 'tags');
+      const tags = tagsRaw ? tagsRaw.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+      const refsRaw = get(row, 'references');
+      const references = refsRaw ? refsRaw.split(';;').map((r: string) => r.trim()).filter(Boolean) : [];
+      // Overall expected result: explicit field takes priority, else fall back to expectedResult
+      const expectedResult = (get(row, 'expectedResult') || '').trim();
+      return {
+        title: rawTitle, priority, template, testType,
+        category: get(row, 'category').trim(),
+        tags, sectionId, sectionName,
+        description: get(row, 'description').trim(),
+        steps: [],
+        expectedResult,
+        references,
+        error: !rawTitle ? 'Title is required' : undefined,
+      };
+    }
+
+    // Build a single step object from a row for STEPS/BDD templates
+    function buildStepObj(row: Record<string, string>): Record<string, unknown> {
+      const desc = (get(row, 'stepDesc') || get(row, 'steps')).trim();
+      const stepER = get(row, 'stepExpectedResult').trim();
+      return { description: desc, expectedResult: stepER, screenshots: [], expectedScreenshots: [] };
+    }
+
+    // Multi-row mode: Excel format where each step occupies its own row
+    // Detected when stepDesc is mapped AND at least one continuation row exists
+    const hasStepDescCol = Boolean(fieldToCol['stepDesc']);
+    const hasMultiRows = hasStepDescCol && csvRawRows.some(r => !get(r, 'title').trim() && get(r, 'stepDesc').trim());
+
+    if (hasMultiRows) {
+      const result: ImportRow[] = [];
+      let current: ImportRow | null = null;
+
+      for (const row of csvRawRows) {
+        const titleVal = get(row, 'title').trim();
+        const stepVal = get(row, 'stepDesc').trim();
+
+        if (titleVal) {
+          // Start of a new test case
+          if (current) result.push(current);
+          current = buildBaseRow(row);
+          if (stepVal) {
+            if (current.template === 'STEPS' || current.template === 'BDD') {
+              current.steps = [buildStepObj(row)];
+            } else {
+              // TEXT / EXPLORATORY: step cell is the body text
+              current.steps = [stepVal];
+            }
+          }
+        } else if (current && stepVal) {
+          // Continuation row — append step to current test case
+          if (current.template === 'STEPS' || current.template === 'BDD') {
+            (current.steps as unknown[]).push(buildStepObj(row));
+          } else {
+            // Accumulate multi-line text body
+            const prev = (current.steps as string[])[0] ?? '';
+            current.steps = [prev ? prev + '\n' + stepVal : stepVal];
+          }
+        }
+      }
+      if (current) result.push(current);
+      return result;
+    }
+
+    // Single-row mode: CSV flat format (steps delimited by ;;)
+    return csvRawRows.map(row => {
+      const base = buildBaseRow(row);
+      const stepsRaw = get(row, 'steps').trim();
+      let steps: unknown[];
+      if (base.template === 'STEPS' || base.template === 'BDD') {
+        steps = stepsRaw.split(';;').filter(Boolean).map(s => ({
+          description: s.trim(), expectedResult: '', screenshots: [], expectedScreenshots: [],
+        }));
+      } else if (base.template === 'TEXT' || base.template === 'EXPLORATORY') {
+        steps = stepsRaw ? [stepsRaw] : [];
+      } else {
+        steps = [];
+      }
+      return { ...base, steps };
+    });
+  }
+
+  function handleColumnMapNext() {
+    if (uniquePriorityValues.length > 0) {
+      const PRIORITY_ALIASES: Record<string, string> = {
+        p0: 'CRITICAL', p1: 'HIGH', p2: 'MEDIUM', p3: 'LOW',
+        critical: 'CRITICAL', high: 'HIGH', medium: 'MEDIUM', low: 'LOW',
+        blocker: 'CRITICAL', major: 'HIGH', minor: 'LOW', trivial: 'LOW',
+        '1': 'CRITICAL', '2': 'HIGH', '3': 'MEDIUM', '4': 'LOW',
+      };
+      const initial: Record<string, string> = {};
+      uniquePriorityValues.forEach(v => { initial[v] = PRIORITY_ALIASES[v.toLowerCase()] || ''; });
+      setValueMap(initial);
+      setImportStep('value-map');
+    } else {
+      setImportRows(buildImportRows());
+      setImportStep('preview');
+    }
+  }
+
+  function handleValueMapNext() {
+    setImportRows(buildImportRows());
+    setImportStep('preview');
   }
 
   async function handleImportSubmit() {
@@ -350,9 +646,11 @@ export default function TestCaseList() {
     try {
       const { data } = await client.post('/test-cases/bulk-import', {
         projectId,
+        suiteId: importSuiteId || undefined,
         cases: valid.map(r => ({
           title: r.title, priority: r.priority, template: r.template, testType: r.testType,
-          category: r.category || null, tags: r.tags, sectionId: r.sectionId,
+          category: r.category || null, tags: r.tags,
+          sectionId: r.sectionId, sectionPath: r.sectionName || null,
           description: r.description || null, steps: r.steps,
           expectedResult: r.expectedResult, references: r.references,
         })),
@@ -370,8 +668,26 @@ export default function TestCaseList() {
   function closeImport() {
     setShowImport(false);
     setImportStep('upload');
+    setImportSettings({ delimiter: ',', hasHeader: true });
+    setImportSuiteId('');
+    setRawFileText('');
+    setImportFileName('');
+    setIsExcelFile(false);
+    setCsvHeaders([]);
+    setCsvRawRows([]);
+    setColumnMap({});
+    setValueMap({});
     setImportRows([]);
     setImportResult(null);
+  }
+
+  function downloadErrorLog() {
+    if (!importResult?.errors.length) return;
+    const lines = ['Row,Error', ...importResult.errors.map(e => `${e.row},"${e.error.replace(/"/g, '""')}"`)];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'import-errors.csv'; a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function handleBulkMove() {
@@ -615,7 +931,7 @@ export default function TestCaseList() {
           </button>
           {canCreate && (
             <button onClick={() => setShowImport(true)} className="btn-secondary text-sm">
-              ↑ Import CSV
+              ↑ Import CSV / Excel
             </button>
           )}
           {canCreate && (
@@ -770,26 +1086,28 @@ export default function TestCaseList() {
                   )}
 
                   {(() => {
-                    const steps = parseTags(selectedTc.steps);
+                    const rawSteps: unknown[] = parseJSON(selectedTc.steps);
+                    const getStepText = (s: unknown) =>
+                      typeof s === 'string' ? s : ((s as Record<string, string>).description ?? '');
                     const label = selectedTc.template === 'BDD' ? 'Given / When / Then'
                       : selectedTc.template === 'EXPLORATORY' ? 'Session Notes'
                       : selectedTc.template === 'TEXT' ? 'Test Description' : 'Steps';
-                    return steps.length > 0 ? (
+                    return rawSteps.length > 0 ? (
                       <div>
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{label}</p>
                         {(selectedTc.template === 'STEPS' || selectedTc.template === 'BDD') ? (
                           <ol className="space-y-2">
-                            {steps.map((s, i) => (
+                            {rawSteps.map((s, i) => (
                               <li key={i} className="flex gap-2 text-sm">
                                 <span className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs flex items-center justify-center font-medium mt-0.5">
                                   {i + 1}
                                 </span>
-                                <span className="text-gray-700">{s}</span>
+                                <span className="text-gray-700">{getStepText(s)}</span>
                               </li>
                             ))}
                           </ol>
                         ) : (
-                          <p className="text-sm text-gray-700 whitespace-pre-wrap">{steps[0]}</p>
+                          <p className="text-sm text-gray-700 whitespace-pre-wrap">{getStepText(rawSteps[0])}</p>
                         )}
                       </div>
                     ) : null;
@@ -954,219 +1272,428 @@ export default function TestCaseList() {
         </div>
       )}
 
-      {/* Import CSV modal */}
-      {showImport && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl flex flex-col" style={{ maxHeight: '90vh' }}>
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 shrink-0">
-              <div className="flex items-center gap-3">
-                <h3 className="text-base font-semibold text-gray-900">Import Test Cases</h3>
-                <div className="flex items-center gap-1 text-xs">
-                  {(['upload', 'preview', 'done'] as const).map((step, idx) => (
-                    <Fragment key={step}>
-                      {idx > 0 && <span className="text-gray-300 mx-1">›</span>}
-                      <span className={`px-2 py-0.5 rounded-full font-medium ${
-                        importStep === step
-                          ? 'bg-blue-100 text-blue-700'
-                          : idx < (['upload','preview','done'] as const).indexOf(importStep)
-                            ? 'text-green-600'
-                            : 'text-gray-400'
-                      }`}>
-                        {idx + 1}. {step.charAt(0).toUpperCase() + step.slice(1)}
-                      </span>
-                    </Fragment>
-                  ))}
+      {/* Import CSV modal — 5-step flow per TMS-16 */}
+      {showImport && (() => {
+        const STEPS = ['upload', 'column-map', 'value-map', 'preview', 'done'] as const;
+        const STEP_LABELS = ['Upload', 'Map Columns', 'Map Values', 'Preview', 'Done'];
+        const currentIdx = STEPS.indexOf(importStep);
+        const validRows = importRows.filter(r => !r.error);
+        return (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl flex flex-col" style={{ maxHeight: '92vh' }}>
+
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 shrink-0">
+                <div className="flex items-center gap-4">
+                  <h3 className="text-base font-semibold text-gray-900">Import Test Cases</h3>
+                  <ol className="flex items-center gap-1 text-xs">
+                    {STEPS.map((s, idx) => (
+                      <Fragment key={s}>
+                        {idx > 0 && <span className="text-gray-300">›</span>}
+                        <li className={`px-2 py-0.5 rounded-full font-medium ${
+                          idx === currentIdx ? 'bg-blue-100 text-blue-700' :
+                          idx < currentIdx   ? 'text-green-600' : 'text-gray-400'
+                        }`}>
+                          {idx + 1}. {STEP_LABELS[idx]}
+                        </li>
+                      </Fragment>
+                    ))}
+                  </ol>
                 </div>
+                <button onClick={closeImport} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
               </div>
-              <button onClick={closeImport} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
-            </div>
 
-            {/* Modal body */}
-            <div className="overflow-y-auto flex-1 px-6 py-5">
+              {/* Body */}
+              <div className="overflow-y-auto flex-1 px-6 py-5">
 
-              {/* Step 1: Upload */}
-              {importStep === 'upload' && (
-                <div className="space-y-5">
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800 space-y-1">
-                    <p className="font-medium">CSV Format</p>
-                    <p className="text-blue-700 text-xs">Required column: <code className="bg-blue-100 px-1 rounded">Title</code>. Optional: Priority, Template, TestType, Category, Tags, Section, Precondition, Steps, ExpectedResult, References.</p>
-                    <ul className="text-xs text-blue-600 list-disc list-inside space-y-0.5 mt-1">
-                      <li>Steps: separate multiple steps with <code className="bg-blue-100 px-1 rounded">;;</code></li>
-                      <li>Tags: comma-separated values</li>
-                      <li>References: separate multiple with <code className="bg-blue-100 px-1 rounded">;;</code></li>
-                      <li>Priority: LOW, MEDIUM, HIGH, CRITICAL (defaults to MEDIUM)</li>
-                      <li>Template: STEPS, TEXT, EXPLORATORY, BDD (defaults to STEPS)</li>
-                    </ul>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button onClick={downloadSampleCSV} className="btn-secondary text-sm">
-                      ↓ Download Sample CSV
-                    </button>
-                    <span className="text-xs text-gray-400">Use this as a template for your import file</span>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Select CSV file</label>
-                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors">
-                      <div className="text-center">
-                        <p className="text-2xl mb-1">📄</p>
-                        <p className="text-sm text-gray-600 font-medium">Click to choose a CSV file</p>
-                        <p className="text-xs text-gray-400 mt-0.5">or drag and drop here</p>
-                      </div>
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        className="hidden"
-                        onChange={handleImportFile}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Step 2: Preview */}
-              {importStep === 'preview' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                {/* ── Screen 1: Upload + Settings ─────────────────────────── */}
+                {importStep === 'upload' && (
+                  <div className="space-y-5">
+                    {/* File drop zone */}
                     <div>
-                      <p className="text-sm font-medium text-gray-700">
-                        {importRows.filter(r => !r.error).length} of {importRows.length} rows ready to import
-                      </p>
-                      {importRows.some(r => r.error) && (
-                        <p className="text-xs text-red-600 mt-0.5">
-                          {importRows.filter(r => r.error).length} row{importRows.filter(r => r.error).length !== 1 ? 's' : ''} have errors and will be skipped
-                        </p>
+                      <label className={`flex flex-col items-center justify-center w-full h-36 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+                        importFileName ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                      }`}>
+                        {importFileName ? (
+                          <div className="text-center">
+                            <p className="text-2xl mb-1">✓</p>
+                            <p className="text-sm font-medium text-green-700">{importFileName}</p>
+                            <p className="text-xs text-green-600 mt-0.5">Click to choose a different file</p>
+                          </div>
+                        ) : (
+                          <div className="text-center">
+                            <p className="text-3xl mb-1">📂</p>
+                            <p className="text-sm font-medium text-gray-600">Click to choose a CSV or Excel file</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Max 10 MB · Supported: .csv, .xlsx</p>
+                          </div>
+                        )}
+                        <input type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={handleImportFile} />
+                      </label>
+                    </div>
+
+                    {/* Import settings */}
+                    <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      {!isExcelFile && (
+                        <div>
+                          <label className="label text-xs">Delimiter</label>
+                          <select
+                            className="input"
+                            value={importSettings.delimiter}
+                            onChange={e => setImportSettings(s => ({ ...s, delimiter: e.target.value }))}
+                          >
+                            <option value=",">Comma ( , )</option>
+                            <option value=";">Semicolon ( ; )</option>
+                            <option value={'\t'}>Tab</option>
+                            <option value="|">Pipe ( | )</option>
+                          </select>
+                        </div>
+                      )}
+                      <div className={isExcelFile ? 'col-span-2' : ''}>
+                        <label className="label text-xs">Suite (for section auto-creation)</label>
+                        <select
+                          className="input"
+                          value={importSuiteId}
+                          onChange={e => setImportSuiteId(e.target.value)}
+                        >
+                          <option value="">— Auto-detect —</option>
+                          {bulkMoveSuites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </div>
+                      {!isExcelFile && (
+                        <div className="col-span-2 flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="hasHeader"
+                            checked={importSettings.hasHeader}
+                            onChange={e => setImportSettings(s => ({ ...s, hasHeader: e.target.checked }))}
+                            className="w-4 h-4 accent-blue-600"
+                          />
+                          <label htmlFor="hasHeader" className="text-sm text-gray-700 cursor-pointer">
+                            First row contains column headers
+                          </label>
+                        </div>
+                      )}
+                      {isExcelFile && (
+                        <div className="col-span-2 flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+                          <span>📊</span>
+                          <span>Excel file detected — first row used as headers automatically.</span>
+                        </div>
                       )}
                     </div>
-                    <button onClick={() => setImportStep('upload')} className="text-xs text-gray-400 hover:text-gray-600">
-                      ← Back
-                    </button>
-                  </div>
 
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <div className="overflow-x-auto" style={{ maxHeight: '360px', overflowY: 'auto' }}>
-                      <table className="w-full text-xs">
-                        <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                    {/* Sample downloads */}
+                    <div className="space-y-2 pt-2 border-t border-gray-100">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sample Files</p>
+                      <div className="flex items-center gap-3">
+                        <button onClick={generateSampleXLSX} className="btn-secondary text-sm">
+                          ↓ Sample Excel (.xlsx)
+                        </button>
+                        <button onClick={downloadSampleCSV} className="btn-secondary text-sm">
+                          ↓ Sample CSV (.csv)
+                        </button>
+                        <span className="text-xs text-gray-400">
+                          Includes all 4 template types with example rows
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2 space-y-1">
+                        <p><span className="font-semibold text-gray-700">Excel format</span> — one step per row; blank Title = continuation of the previous test case</p>
+                        <p><span className="font-semibold text-gray-700">CSV format</span> — steps in a single cell separated by <code className="bg-gray-100 px-1 rounded">;;</code></p>
+                        <p><span className="font-semibold text-gray-700">Section paths</span> — use <code className="bg-gray-100 px-1 rounded">Parent / Child</code> (Excel) or <code className="bg-gray-100 px-1 rounded">Parent &gt; Child</code> (CSV)</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Screen 2: Column Mapping ─────────────────────────────── */}
+                {importStep === 'column-map' && (
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <p className="text-sm text-gray-600">
+                        Map each column from <span className="font-medium text-gray-800">{importFileName}</span> to the corresponding TMS field.
+                        Auto-detected mappings are pre-filled.
+                      </p>
+                      {isExcelFile && (
+                        <div className="shrink-0 text-xs bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-blue-700 space-y-0.5 min-w-[220px]">
+                          <p className="font-semibold">Excel multi-row format</p>
+                          <p>Map <code className="bg-blue-100 px-0.5 rounded">Step</code> → <strong>Step (one row per step)</strong></p>
+                          <p>Map <code className="bg-blue-100 px-0.5 rounded">Expected Result</code> → <strong>Step Expected Result</strong></p>
+                          <p>Map <code className="bg-blue-100 px-0.5 rounded">Overall Expected Result</code> → <strong>Expected Result / Overall</strong></p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 border-b border-gray-200">
                           <tr>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600 w-6">#</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Title</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Priority</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Template</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Category</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Section</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600">Steps</th>
-                            <th className="px-3 py-2 text-left font-medium text-gray-600 w-20">Status</th>
+                            <th className="px-4 py-2.5 text-left font-medium text-gray-600">CSV Column</th>
+                            <th className="px-4 py-2.5 text-left font-medium text-gray-600">Sample Value</th>
+                            <th className="px-4 py-2.5 text-left font-medium text-gray-600">TMS Field</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {importRows.map((row, i) => (
-                            <tr key={i} className={`border-b border-gray-100 ${row.error ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
-                              <td className="px-3 py-2 text-gray-400">{i + 1}</td>
-                              <td className="px-3 py-2 font-medium text-gray-800 max-w-[200px]">
-                                <span className="block truncate" title={row.title}>{row.title || <em className="text-red-400">missing</em>}</span>
-                              </td>
-                              <td className="px-3 py-2">
-                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                                  row.priority === 'CRITICAL' ? 'bg-red-100 text-red-700' :
-                                  row.priority === 'HIGH' ? 'bg-orange-100 text-orange-700' :
-                                  row.priority === 'LOW' ? 'bg-gray-100 text-gray-600' :
-                                  'bg-yellow-100 text-yellow-700'
-                                }`}>{row.priority}</span>
-                              </td>
-                              <td className="px-3 py-2 text-gray-600">{row.template}</td>
-                              <td className="px-3 py-2 text-gray-500">{row.category || '—'}</td>
-                              <td className="px-3 py-2 text-gray-500 max-w-[120px]">
-                                {row.sectionName ? (
-                                  <span className={`block truncate ${row.sectionId ? 'text-green-700' : 'text-orange-600'}`} title={row.sectionName}>
-                                    {row.sectionId ? '✓ ' : '? '}{row.sectionName}
-                                  </span>
-                                ) : '—'}
-                              </td>
-                              <td className="px-3 py-2 text-gray-500">
-                                {Array.isArray(row.steps) ? row.steps.length : 0} step{(Array.isArray(row.steps) ? row.steps.length : 0) !== 1 ? 's' : ''}
-                              </td>
-                              <td className="px-3 py-2">
-                                {row.error ? (
-                                  <span className="text-red-600 font-medium" title={row.error}>✕ Error</span>
-                                ) : (
-                                  <span className="text-green-600 font-medium">✓ Ready</span>
-                                )}
+                          {csvHeaders.map(h => {
+                            const sample = csvRawRows[0]?.[h] ?? '';
+                            const mapped = columnMap[h] ?? '';
+                            const isDupe = mapped && Object.entries(columnMap).filter(([k, v]) => v === mapped && k !== h).length > 0;
+                            return (
+                              <tr key={h} className="border-b border-gray-100 hover:bg-gray-50">
+                                <td className="px-4 py-2.5 font-mono text-xs text-gray-700 font-medium">{h}</td>
+                                <td className="px-4 py-2.5 text-gray-400 text-xs max-w-[180px]">
+                                  <span className="block truncate">{sample || '—'}</span>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  <select
+                                    className={`input text-sm py-1 ${isDupe ? 'border-orange-400 bg-orange-50' : ''}`}
+                                    value={mapped}
+                                    onChange={e => setColumnMap(m => ({ ...m, [h]: e.target.value }))}
+                                  >
+                                    {TMS_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                                  </select>
+                                  {isDupe && <p className="text-[10px] text-orange-600 mt-0.5">Duplicate mapping</p>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {!Object.values(columnMap).includes('title') && (
+                      <p className="text-xs text-red-600 flex items-center gap-1">
+                        ⚠ No column mapped to <strong>Title</strong> — this is required to import.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Screen 3: Value Mapping ──────────────────────────────── */}
+                {importStep === 'value-map' && (
+                  <div className="space-y-4">
+                    <p className="text-sm text-gray-600">
+                      Map the priority values found in your CSV to TMS priority levels.
+                    </p>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 border-b border-gray-200">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left font-medium text-gray-600">CSV Priority Value</th>
+                            <th className="px-4 py-2.5 text-left font-medium text-gray-600">TMS Priority</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {uniquePriorityValues.map(val => (
+                            <tr key={val} className="border-b border-gray-100 hover:bg-gray-50">
+                              <td className="px-4 py-2.5 font-mono text-sm text-gray-800">{val}</td>
+                              <td className="px-4 py-3">
+                                <select
+                                  className="input text-sm py-1 w-40"
+                                  value={valueMap[val] ?? ''}
+                                  onChange={e => setValueMap(m => ({ ...m, [val]: e.target.value }))}
+                                >
+                                  <option value="">— Keep as-is —</option>
+                                  {TMS_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                                </select>
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                  </div>
-
-                  {importRows.some(r => r.error) && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-xs text-red-700 space-y-1">
-                      <p className="font-medium">Rows with errors (will be skipped):</p>
-                      {importRows.filter(r => r.error).map((r, i) => (
-                        <p key={i}>Row {importRows.indexOf(r) + 1}: {r.error}</p>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Step 3: Done */}
-              {importStep === 'done' && importResult && (
-                <div className="space-y-4">
-                  <div className="flex flex-col items-center py-4 text-center">
-                    <div className="text-4xl mb-3">{importResult.imported > 0 ? '✅' : '⚠️'}</div>
-                    <p className="text-lg font-semibold text-gray-900">
-                      {importResult.imported > 0
-                        ? `${importResult.imported} test case${importResult.imported !== 1 ? 's' : ''} imported successfully`
-                        : 'No test cases were imported'}
+                    <p className="text-xs text-gray-400">
+                      Values left as "Keep as-is" will use MEDIUM if they don't match a known priority.
                     </p>
-                    {importResult.errors.length > 0 && (
-                      <p className="text-sm text-gray-500 mt-1">
-                        {importResult.errors.length} row{importResult.errors.length !== 1 ? 's' : ''} failed
+                  </div>
+                )}
+
+                {/* ── Screen 4: Preview ────────────────────────────────────── */}
+                {importStep === 'preview' && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          <span className="text-green-700 font-semibold">{validRows.length}</span> of {importRows.length} rows ready to import
+                        </p>
+                        {importRows.some(r => r.error) && (
+                          <p className="text-xs text-red-600 mt-0.5">
+                            {importRows.filter(r => r.error).length} row{importRows.filter(r => r.error).length !== 1 ? 's' : ''} have errors and will be skipped
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                        <table className="w-full text-xs">
+                          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                            <tr>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600 w-8">#</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Title</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Priority</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Template</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Category</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Section</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600">Steps</th>
+                              <th className="px-3 py-2 text-left font-medium text-gray-600 w-20">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importRows.map((row, i) => (
+                              <tr key={i} className={`border-b border-gray-100 ${row.error ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
+                                <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                                <td className="px-3 py-2 font-medium text-gray-800 max-w-[200px]">
+                                  <span className="block truncate" title={row.title}>
+                                    {row.title || <em className="text-red-400 font-normal">missing</em>}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                    row.priority === 'CRITICAL' ? 'bg-red-100 text-red-700' :
+                                    row.priority === 'HIGH'     ? 'bg-orange-100 text-orange-700' :
+                                    row.priority === 'LOW'      ? 'bg-gray-100 text-gray-600' :
+                                                                  'bg-yellow-100 text-yellow-700'
+                                  }`}>{row.priority}</span>
+                                </td>
+                                <td className="px-3 py-2 text-gray-600">{row.template}</td>
+                                <td className="px-3 py-2 text-gray-500">{row.category || '—'}</td>
+                                <td className="px-3 py-2 text-gray-500 max-w-[140px]">
+                                  {row.sectionName ? (
+                                    <span className={`block truncate ${row.sectionId ? 'text-green-700' : 'text-blue-600'}`} title={row.sectionName}>
+                                      {row.sectionId ? '✓ ' : '+ '}{row.sectionName}
+                                    </span>
+                                  ) : '—'}
+                                </td>
+                                <td className="px-3 py-2 text-gray-500">
+                                  {(Array.isArray(row.steps) ? row.steps.length : 0)} step{(Array.isArray(row.steps) ? row.steps.length : 0) !== 1 ? 's' : ''}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.error
+                                    ? <span className="text-red-600 font-medium" title={row.error}>✕ Error</span>
+                                    : <span className="text-green-600 font-medium">✓ Ready</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {importRows.some(r => r.sectionName && !r.sectionId) && (
+                      <p className="text-xs text-blue-600">
+                        + Sections marked in blue will be auto-created during import.
                       </p>
                     )}
-                  </div>
 
-                  {importResult.errors.length > 0 && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm space-y-1">
-                      <p className="font-medium text-red-800">Import errors:</p>
-                      {importResult.errors.map((e, i) => (
-                        <p key={i} className="text-xs text-red-700">Row {e.row}: {e.error}</p>
-                      ))}
+                    {importRows.some(r => r.error) && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-xs text-red-700 space-y-1">
+                        <p className="font-medium">Rows with errors (will be skipped):</p>
+                        {importRows.filter(r => r.error).map((r, i) => (
+                          <p key={i}>Row {importRows.indexOf(r) + 1}: {r.error}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Screen 5: Done ───────────────────────────────────────── */}
+                {importStep === 'done' && importResult && (
+                  <div className="space-y-5">
+                    <div className="flex flex-col items-center py-6 text-center">
+                      <div className="text-5xl mb-4">{importResult.imported > 0 ? '✅' : '⚠️'}</div>
+                      <p className="text-xl font-semibold text-gray-900">
+                        {importResult.imported > 0 ? 'Import Completed' : 'Nothing Imported'}
+                      </p>
                     </div>
+
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <p className="text-2xl font-bold text-green-700">{importResult.imported}</p>
+                        <p className="text-xs text-green-600 mt-0.5">Test Cases Imported</p>
+                      </div>
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <p className="text-2xl font-bold text-blue-700">{importResult.createdSections ?? 0}</p>
+                        <p className="text-xs text-blue-600 mt-0.5">Sections Created</p>
+                      </div>
+                      <div className={`border rounded-lg p-3 ${importResult.errors.length > 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200'}`}>
+                        <p className={`text-2xl font-bold ${importResult.errors.length > 0 ? 'text-red-700' : 'text-gray-400'}`}>{importResult.errors.length}</p>
+                        <p className={`text-xs mt-0.5 ${importResult.errors.length > 0 ? 'text-red-600' : 'text-gray-400'}`}>Failed Records</p>
+                      </div>
+                    </div>
+
+                    {importResult.errors.length > 0 && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 space-y-1">
+                        <p className="text-sm font-medium text-red-800">Warnings / Errors:</p>
+                        {importResult.errors.map((e, i) => (
+                          <p key={i} className="text-xs text-red-700">· Row {e.row}: {e.error}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-200 shrink-0">
+                <div>
+                  {importStep === 'done' && importResult && importResult.errors.length > 0 && (
+                    <button onClick={downloadErrorLog} className="btn-secondary text-sm">
+                      ↓ Download Error Log
+                    </button>
                   )}
                 </div>
-              )}
-            </div>
-
-            {/* Modal footer */}
-            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 shrink-0">
-              {importStep === 'preview' && (
-                <>
-                  <button onClick={closeImport} className="btn-secondary">Cancel</button>
-                  <button
-                    onClick={handleImportSubmit}
-                    disabled={importBusy || importRows.filter(r => !r.error).length === 0}
-                    className="btn-primary disabled:opacity-40"
-                  >
-                    {importBusy
-                      ? 'Importing…'
-                      : `Import ${importRows.filter(r => !r.error).length} case${importRows.filter(r => !r.error).length !== 1 ? 's' : ''}`}
-                  </button>
-                </>
-              )}
-              {importStep === 'done' && (
-                <button onClick={closeImport} className="btn-primary">Done</button>
-              )}
-              {importStep === 'upload' && (
-                <button onClick={closeImport} className="btn-secondary">Cancel</button>
-              )}
+                <div className="flex items-center gap-3">
+                  {importStep === 'upload' && (
+                    <>
+                      <button onClick={closeImport} className="btn-secondary">Cancel</button>
+                      <button
+                        onClick={handleUploadNext}
+                        disabled={!importFileName || (isExcelFile && csvHeaders.length === 0)}
+                        className="btn-primary disabled:opacity-40"
+                      >Next →</button>
+                    </>
+                  )}
+                  {importStep === 'column-map' && (
+                    <>
+                      <button onClick={() => setImportStep('upload')} className="btn-secondary">← Back</button>
+                      <button
+                        onClick={handleColumnMapNext}
+                        disabled={!Object.values(columnMap).includes('title')}
+                        className="btn-primary disabled:opacity-40"
+                      >Next →</button>
+                    </>
+                  )}
+                  {importStep === 'value-map' && (
+                    <>
+                      <button onClick={() => setImportStep('column-map')} className="btn-secondary">← Back</button>
+                      <button onClick={handleValueMapNext} className="btn-primary">Next →</button>
+                    </>
+                  )}
+                  {importStep === 'preview' && (
+                    <>
+                      <button onClick={() => setImportStep(uniquePriorityValues.length > 0 ? 'value-map' : 'column-map')} className="btn-secondary">← Back</button>
+                      <button
+                        onClick={handleImportSubmit}
+                        disabled={importBusy || validRows.length === 0}
+                        className="btn-primary disabled:opacity-40"
+                      >
+                        {importBusy ? 'Importing…' : `Import ${validRows.length} case${validRows.length !== 1 ? 's' : ''}`}
+                      </button>
+                    </>
+                  )}
+                  {importStep === 'done' && (
+                    <>
+                      {projectId && (
+                        <Link to={`${base}/test-cases`} onClick={closeImport} className="btn-secondary text-sm">
+                          Go to Test Cases
+                        </Link>
+                      )}
+                      <button onClick={closeImport} className="btn-primary">Done</button>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

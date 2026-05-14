@@ -27,17 +27,28 @@ const ALLOWED_TRANSITIONS: Record<string, string[]> = {
 };
 
 export async function listTestCases(req: AuthRequest, res: Response) {
-  const { status, priority, category, projectId, showDeleted } = req.query;
+  const { status, priority, category, projectId, suiteId, showDeleted } = req.query;
+
+  let sectionFilter: { sectionId: { in: string[] } } | undefined;
+  if (suiteId) {
+    const sections = await prisma.section.findMany({
+      where: { suiteId: String(suiteId) },
+      select: { id: true },
+    });
+    sectionFilter = { sectionId: { in: sections.map((s) => s.id) } };
+  }
+
   const cases = await prisma.testCase.findMany({
     where: {
       ...(status ? { status: String(status) } : {}),
       ...(priority ? { priority: String(priority) } : {}),
       ...(category ? { category: String(category) } : {}),
       ...(projectId ? { projectId: String(projectId) } : {}),
+      ...(sectionFilter ?? {}),
       ...(showDeleted === 'true' ? {} : { markedForDeletion: false }),
     },
     select: caseSelect,
-    orderBy: { updatedAt: 'desc' },
+    orderBy: { seqId: 'asc' },
   });
   res.json(cases);
 }
@@ -220,12 +231,14 @@ const VALID_TEMPLATES  = ['STEPS', 'TEXT', 'EXPLORATORY', 'BDD'];
 const VALID_TYPES      = ['FUNCTIONAL', 'REGRESSION', 'PERFORMANCE', 'USABILITY', 'SECURITY', 'SMOKE', 'SANITY'];
 
 export async function bulkImportTestCases(req: AuthRequest, res: Response) {
-  const { projectId, cases: rows } = req.body as {
+  const { projectId, suiteId, cases: rows } = req.body as {
     projectId?: string;
+    suiteId?: string;
     cases: Array<{
       title: string;
       priority?: string; template?: string; testType?: string;
       category?: string; tags?: string[]; sectionId?: string | null;
+      sectionPath?: string | null;
       description?: string; steps?: unknown[]; expectedResult?: string;
       references?: string[];
     }>;
@@ -236,13 +249,63 @@ export async function bulkImportTestCases(req: AuthRequest, res: Response) {
     return;
   }
 
+  // Resolve which suite to use for section creation
+  let resolvedSuiteId: string | null = suiteId ?? null;
+  if (!resolvedSuiteId && projectId) {
+    const firstSuite = await prisma.testSuite.findFirst({ where: { projectId }, select: { id: true } });
+    resolvedSuiteId = firstSuite?.id ?? null;
+  }
+
+  // Cache: sectionPath (pipe-joined parts) → sectionId
+  const sectionCache = new Map<string, string>();
+
+  async function resolveOrCreateSection(pathParts: string[]): Promise<string | null> {
+    if (!resolvedSuiteId || pathParts.length === 0) return null;
+    let parentId: string | null = null;
+    for (let depth = 0; depth < pathParts.length; depth++) {
+      const name = pathParts[depth].trim();
+      if (!name) continue;
+      const cacheKey = pathParts.slice(0, depth + 1).join('|');
+      if (sectionCache.has(cacheKey)) {
+        parentId = sectionCache.get(cacheKey)!;
+        continue;
+      }
+      let section: { id: string } | null = await prisma.section.findFirst({
+        where: { suiteId: resolvedSuiteId, parentId: parentId ?? null, name },
+        select: { id: true },
+      });
+      if (!section) {
+        const count: number = await prisma.section.count({ where: { suiteId: resolvedSuiteId!, parentId: parentId ?? null } });
+        const parentDepth: number = parentId
+          ? ((await prisma.section.findUnique({ where: { id: parentId }, select: { depth: true } }))?.depth ?? 0)
+          : -1;
+        section = await prisma.section.create({
+          data: { name, suiteId: resolvedSuiteId!, parentId: parentId ?? null, order: count, depth: parentDepth + 1 },
+          select: { id: true },
+        });
+        createdSections++;
+      }
+      sectionCache.set(cacheKey, section.id);
+      parentId = section.id;
+    }
+    return parentId;
+  }
+
   let imported = 0;
+  let createdSections = 0;
   const errors: { row: number; error: string }[] = [];
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     if (!row.title?.trim()) { errors.push({ row: i + 1, error: 'Title is required' }); continue; }
     try {
+      // Resolve sectionId: prefer pre-resolved, fall back to path-based creation
+      let sectionId: string | null = row.sectionId || null;
+      if (!sectionId && row.sectionPath) {
+        const parts = row.sectionPath.split('>').map(s => s.trim()).filter(Boolean);
+        sectionId = await resolveOrCreateSection(parts);
+      }
+
       const seqRows = await prisma.$queryRaw<Array<{ maxSeq: number | null }>>`SELECT MAX("seqId") as "maxSeq" FROM "TestCase"`;
       const nextSeqId = (Number(seqRows[0]?.maxSeq) || 0) + 1;
       await prisma.testCase.create({
@@ -259,7 +322,7 @@ export async function bulkImportTestCases(req: AuthRequest, res: Response) {
           testType:  VALID_TYPES.includes(row.testType ?? '')        ? row.testType!  : 'FUNCTIONAL',
           category: row.category || null,
           projectId: projectId || null,
-          sectionId: row.sectionId || null,
+          sectionId,
           createdById: req.user!.id,
         },
       });
@@ -269,7 +332,7 @@ export async function bulkImportTestCases(req: AuthRequest, res: Response) {
     }
   }
 
-  res.json({ imported, errors });
+  res.json({ imported, createdSections, errors });
 }
 
 // Keep legacy handlers for backward compat (routes still import them)

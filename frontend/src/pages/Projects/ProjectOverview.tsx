@@ -182,7 +182,7 @@ export default function ProjectOverview() {
               <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-100">
                 <h3 className="font-semibold text-gray-800 text-sm">Repository Structure</h3>
                 <Link to={`/projects/${projectId}/test-suites/${defaultSuite.id}`}
-                  className="text-xs text-blue-600 hover:underline">Manage sections →</Link>
+                  className="text-xs text-blue-600 hover:underline">All test cases →</Link>
               </div>
               {defaultSuite.sections.length === 0 ? (
                 <p className="p-5 text-sm text-gray-400 text-center">
@@ -192,7 +192,11 @@ export default function ProjectOverview() {
                 </p>
               ) : (
                 <div className="p-3 space-y-0.5">
-                  <SectionTree sections={defaultSuite.sections} selectedId={null} onSelect={() => {}} />
+                  <SectionTree
+                    sections={defaultSuite.sections}
+                    selectedId={null}
+                    onSelect={(id) => navigate(`/projects/${projectId}/test-suites/${defaultSuite.id}?section=${id}`)}
+                  />
                 </div>
               )}
             </div>
@@ -200,21 +204,36 @@ export default function ProjectOverview() {
             <div className="card p-8 text-center text-gray-400">No suites yet.</div>
           ) : (
             detail.suites.map((s) => (
-              <Link key={s.id} to={`/projects/${projectId}/test-suites/${s.id}`}
-                className="card p-4 flex items-center justify-between hover:bg-blue-50 transition-colors">
-                <div>
+              <div key={s.id} className="card overflow-hidden">
+                <Link
+                  to={`/projects/${projectId}/test-suites/${s.id}`}
+                  className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100 hover:bg-blue-50 transition-colors"
+                >
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-gray-900">{s.name}</span>
                     {s.isDefault && <span className="badge bg-blue-100 text-blue-700 text-xs">Default</span>}
                   </div>
-                  {s.description && <p className="text-sm text-gray-500 mt-0.5">{s.description}</p>}
-                </div>
-                <div className="flex items-center gap-4 text-sm text-gray-400">
-                  <span>{s._count.items} cases</span>
-                  <span>{s._count.sections} sections</span>
-                  <span className="text-blue-500">→</span>
-                </div>
-              </Link>
+                  <div className="flex items-center gap-4 text-sm text-gray-400">
+                    <span>{s._count.items} cases</span>
+                    <span>{s._count.sections} sections</span>
+                    <span className="text-blue-500">→</span>
+                  </div>
+                </Link>
+                {s.description && (
+                  <p className="px-4 py-2 text-sm text-gray-500 border-b border-gray-100">{s.description}</p>
+                )}
+                {s.sections.length === 0 ? (
+                  <p className="px-4 py-3 text-sm text-gray-400">No sections yet.</p>
+                ) : (
+                  <div className="p-3 space-y-0.5">
+                    <SectionTree
+                      sections={s.sections}
+                      selectedId={null}
+                      onSelect={(id) => navigate(`/projects/${projectId}/test-suites/${s.id}?section=${id}`)}
+                    />
+                  </div>
+                )}
+              </div>
             ))
           )}
         </div>
