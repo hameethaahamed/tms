@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import client from '../../api/client';
 import StatusBadge from '../../components/StatusBadge';
 import PriorityBadge from '../../components/PriorityBadge';
@@ -49,15 +49,24 @@ export default function TestCaseDetail() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [tc, setTc] = useState<TestCase | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  const location = useLocation();
+  const fromSuite = (location.state as { from?: string } | null)?.from === 'suite';
   const base = projectId ? `/projects/${projectId}` : '';
 
   async function load() {
-    const { data } = await client.get(`/test-cases/${id}`);
-    setTc(data);
+    try {
+      const { data } = await client.get(`/test-cases/${id}`);
+      setTc(data);
+      setLoadError(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLoadError(msg);
+    }
   }
 
   useEffect(() => { load(); }, [id]);
@@ -83,27 +92,39 @@ export default function TestCaseDetail() {
     setBusy(false);
   }
 
+  if (loadError) return (
+    <div className="p-8">
+      <div className="bg-red-50 border border-red-200 rounded-xl p-6 max-w-lg">
+        <h2 className="text-base font-semibold text-red-800 mb-2">Failed to load test case</h2>
+        <p className="text-sm text-red-700 mb-4">{loadError}</p>
+        <div className="flex gap-2">
+          <button className="btn-secondary text-sm" onClick={() => navigate(-1)}>← Go back</button>
+          <button className="btn-primary text-sm" onClick={load}>Retry</button>
+        </div>
+      </div>
+    </div>
+  );
   if (!tc) return <div className="p-8 text-gray-400">Loading…</div>;
 
-  const rawSteps           = JSON.parse(tc.steps || '[]');
-  const tags: string[]     = JSON.parse(tc.tags);
-  const refs: string[]     = JSON.parse(tc.references || '[]');
+  const rawSteps: unknown[] = (() => { try { const v = JSON.parse(tc.steps || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
+  const tags: string[]      = (() => { try { const v = JSON.parse(tc.tags  || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
+  const refs: string[]      = (() => { try { const v = JSON.parse(tc.references || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
 
   // Parse steps based on template
   interface StepItem { description: string; screenshots: string[]; expectedResult: string; expectedScreenshots: string[] }
   interface BDDScenario { scenario: string; given: string; when: string; then: string }
   function normaliseStep(s: unknown): StepItem {
-    if (typeof s === 'string') return { description: s, screenshots: [], expectedResult: '', expectedScreenshots: [] };
+    if (!s || typeof s === 'string') return { description: s ? String(s) : '', screenshots: [], expectedResult: '', expectedScreenshots: [] };
     const o = s as Record<string, unknown>;
     return {
-      description: (o.description as string) ?? '',
-      screenshots: (o.screenshots as string[]) ?? [],
-      expectedResult: (o.expectedResult as string) ?? '',
-      expectedScreenshots: (o.expectedScreenshots as string[]) ?? [],
+      description: typeof o.description === 'string' ? o.description : '',
+      screenshots: Array.isArray(o.screenshots) ? (o.screenshots as string[]) : [],
+      expectedResult: typeof o.expectedResult === 'string' ? o.expectedResult : '',
+      expectedScreenshots: Array.isArray(o.expectedScreenshots) ? (o.expectedScreenshots as string[]) : [],
     };
   }
-  const stepsItems: StepItem[]     = tc.template === 'STEPS' && rawSteps.length > 0 ? rawSteps.map(normaliseStep) : [];
-  const bddScenarios: BDDScenario[] = tc.template === 'BDD'   && rawSteps.length > 0 && typeof rawSteps[0] === 'object' ? rawSteps : [];
+  const stepsItems: StepItem[]      = tc.template === 'STEPS' && rawSteps.length > 0 ? rawSteps.map(normaliseStep) : [];
+  const bddScenarios: BDDScenario[] = tc.template === 'BDD'   && rawSteps.length > 0 && typeof rawSteps[0] === 'object' ? (rawSteps as BDDScenario[]) : [];
 
   const canEdit        = ['ADMIN', 'QA'].includes(user?.role ?? '');
   const canTransition  = ['ADMIN', 'QA', 'PO'].includes(user?.role ?? '');
@@ -131,7 +152,11 @@ export default function TestCaseDetail() {
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div className="flex-1 min-w-0">
-          <Link to={`${base}/test-cases`} className="text-sm text-gray-400 hover:text-blue-600 mb-1 inline-block">← Test Cases</Link>
+          {fromSuite ? (
+            <button onClick={() => navigate(-1)} className="text-sm text-gray-400 hover:text-blue-600 mb-1 inline-block">← Test Suite</button>
+          ) : (
+            <Link to={`${base}/test-cases`} className="text-sm text-gray-400 hover:text-blue-600 mb-1 inline-block">← Test Cases</Link>
+          )}
           <div className="flex items-center gap-2 mt-1">
             <span className="font-mono text-sm text-gray-400">TC-{String(tc.seqId).padStart(4, '0')}</span>
             <h2 className="text-2xl font-bold text-gray-900">{tc.title}</h2>
@@ -176,7 +201,7 @@ export default function TestCaseDetail() {
             {rawSteps[0] && (
               <div className="card p-5">
                 <h3 className="text-sm font-semibold text-gray-700 mb-2">Steps</h3>
-                <p className="text-sm text-gray-600 whitespace-pre-wrap">{rawSteps[0]}</p>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{String(rawSteps[0] ?? '')}</p>
               </div>
             )}
             {tc.expectedResult && (
@@ -320,9 +345,9 @@ export default function TestCaseDetail() {
               <ul className="space-y-1">
                 {refs.map((ref, i) => (
                   <li key={i} className="text-sm text-blue-600">
-                    {ref.startsWith('http') ? (
+                    {typeof ref === 'string' && ref.startsWith('http') ? (
                       <a href={ref} target="_blank" rel="noreferrer" className="hover:underline">{ref}</a>
-                    ) : <span className="text-gray-700">{ref}</span>}
+                    ) : <span className="text-gray-700">{String(ref ?? '')}</span>}
                   </li>
                 ))}
               </ul>

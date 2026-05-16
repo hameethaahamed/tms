@@ -1,8 +1,38 @@
-import { useEffect, useState } from 'react';
+import { Component, ReactNode, useEffect, useState } from 'react';
 import { Outlet, NavLink, Link, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { ProjectProvider } from '../contexts/ProjectContext';
 import client from '../api/client';
+
+class OutletErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error('[OutletErrorBoundary]', error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-8">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 max-w-lg">
+            <h2 className="text-base font-semibold text-red-800 mb-2">Something went wrong</h2>
+            <p className="text-sm text-red-700 mb-4">{this.state.error.message}</p>
+            <button
+              className="btn-secondary text-sm"
+              onClick={() => window.history.back()}
+            >
+              ← Go back
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface ProjectStub { id: string; name: string; type: string }
 
@@ -181,13 +211,22 @@ function ProjectSidebarContent() {
   );
 }
 
+function BoundedOutlet() {
+  const { pathname } = useLocation();
+  return (
+    <OutletErrorBoundary key={pathname}>
+      <Outlet />
+    </OutletErrorBoundary>
+  );
+}
+
 export default function ProjectLayout() {
   return (
     <ProjectProvider>
       <div className="flex h-screen bg-gray-50">
         <ProjectSidebarContent />
         <main className="flex-1 overflow-auto">
-          <Outlet />
+          <BoundedOutlet />
         </main>
       </div>
     </ProjectProvider>

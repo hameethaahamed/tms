@@ -35,6 +35,10 @@ interface Run {
   createdAt: string;
 }
 
+function countAllTestCases(sections: Section[]): number {
+  return sections.reduce((total, s) => total + s._count.testCases + countAllTestCases(s.children), 0);
+}
+
 function SectionTree({ sections, selectedId, onSelect, depth = 0 }: {
   sections: Section[]; selectedId: string | null;
   onSelect: (id: string | null) => void; depth?: number;
@@ -214,7 +218,7 @@ export default function ProjectOverview() {
                     {s.isDefault && <span className="badge bg-blue-100 text-blue-700 text-xs">Default</span>}
                   </div>
                   <div className="flex items-center gap-4 text-sm text-gray-400">
-                    <span>{s._count.items} cases</span>
+                    <span>{countAllTestCases(s.sections)} cases</span>
                     <span>{s._count.sections} sections</span>
                     <span className="text-blue-500">→</span>
                   </div>

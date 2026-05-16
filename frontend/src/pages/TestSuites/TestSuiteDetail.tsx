@@ -416,10 +416,9 @@ export default function TestSuiteDetail() {
     return (
       <tr
         key={item.id}
-        className={`border-b border-gray-50 cursor-pointer transition-colors ${
+        className={`border-b border-gray-50 transition-colors ${
           isChecked ? 'bg-blue-50/60' : isActive ? 'bg-blue-50' : 'hover:bg-gray-50'
         }`}
-        onClick={() => openDetail(tc.id)}
       >
         <td className="pl-4 pr-2 py-3 w-8" onClick={(e) => { e.stopPropagation(); toggleCheck(tc.id); }}>
           <input type="checkbox" checked={isChecked} readOnly className="rounded text-blue-600 cursor-pointer" />
@@ -428,9 +427,13 @@ export default function TestSuiteDetail() {
           TC-{String(tc.seqId).padStart(4, '0')}
         </td>
         <td className="px-4 py-3" style={indent ? { paddingLeft: `${16 + indent}px` } : undefined}>
-          <span className={`font-medium ${isActive ? 'text-blue-700' : 'text-gray-800'}`}>
+          <Link
+            to={`${base}/test-cases/${tc.id}`}
+            state={{ from: 'suite', suiteId: id }}
+            className={`font-medium hover:text-blue-600 transition-colors ${isActive ? 'text-blue-700' : 'text-gray-800'}`}
+          >
             {tc.title}
-          </span>
+          </Link>
         </td>
         {visibleCols.includes('priority') && <td className="px-4 py-3"><PriorityBadge priority={tc.priority} /></td>}
         {visibleCols.includes('status')   && <td className="px-4 py-3"><StatusBadge status={tc.status} /></td>}
@@ -446,7 +449,7 @@ export default function TestSuiteDetail() {
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); openDetail(tc.id); }}
-              title={isActive ? 'Close details' : 'View details'}
+              title={isActive ? 'Close quick view' : 'Quick view'}
               className={`font-bold text-base leading-none transition-colors ${isActive ? 'text-blue-500' : 'text-gray-400 hover:text-blue-600'}`}
             >›</button>
             {canEdit && (

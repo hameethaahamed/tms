@@ -105,6 +105,30 @@ const TMS_FIELDS: { key: string; label: string }[] = [
 
 const TMS_PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
+// ── Export column definitions ─────────────────────────────────────────────────
+
+const EXPORT_COLUMNS = [
+  { key: 'seqId',          label: 'ID' },
+  { key: 'title',          label: 'Title' },
+  { key: 'section',        label: 'Section' },
+  { key: 'status',         label: 'Status' },
+  { key: 'priority',       label: 'Priority' },
+  { key: 'template',       label: 'Template' },
+  { key: 'testType',       label: 'Test Type' },
+  { key: 'category',       label: 'Category' },
+  { key: 'tags',           label: 'Tags' },
+  { key: 'description',    label: 'Precondition' },
+  { key: 'steps',          label: 'Steps' },
+  { key: 'expectedResult', label: 'Expected Result' },
+  { key: 'references',     label: 'References' },
+  { key: 'createdBy',      label: 'Created By' },
+  { key: 'assignedTo',     label: 'Assigned To' },
+];
+const DEFAULT_EXPORT_COLS = new Set([
+  'title', 'section', 'status', 'priority', 'template', 'testType',
+  'category', 'tags', 'description', 'steps', 'expectedResult', 'references',
+]);
+
 // Maps display template names (including Excel parens format) to internal enum values
 const TEMPLATE_NORMALIZE: Record<string, string> = {
   steps: 'STEPS', '(steps)': 'STEPS',
@@ -296,6 +320,15 @@ export default function TestCaseList() {
   const [importBusy, setImportBusy]         = useState(false);
   const [isExcelFile, setIsExcelFile]       = useState(false);
 
+  // Export
+  const [showExport, setShowExport]                   = useState(false);
+  const [exportFormat, setExportFormat]               = useState<'xlsx' | 'csv' | 'xml'>('xlsx');
+  const [exportSectionScope, setExportSectionScope]   = useState<'all' | 'specific'>('all');
+  const [exportSectionId, setExportSectionId]         = useState('');
+  const [exportSeparateSteps, setExportSeparateSteps] = useState(true);
+  const [exportMaxCompat, setExportMaxCompat]         = useState(false);
+  const [exportCols, setExportCols]                   = useState<Set<string>>(new Set(DEFAULT_EXPORT_COLS));
+
   const canCreate = ['ADMIN', 'QA'].includes(user?.role ?? '');
   const base = projectId ? `/projects/${projectId}` : '';
   const dragTcId = useRef<string | null>(null);
@@ -373,28 +406,189 @@ export default function TestCaseList() {
 
   // ── Export ────────────────────────────────────────────────────────────────
 
-  function handleExport() {
-    const rows = visibleCases.map(tc => {
-      const rawSteps: unknown[] = (() => { try { return JSON.parse(tc.steps || '[]'); } catch { return []; } })();
-      const stepsStr = tc.template === 'STEPS'
-        ? rawSteps.map((s) => (typeof s === 'string' ? s : (s as Record<string,string>).description || '')).join(';;')
-        : String((rawSteps[0] as string) || '');
-      const tags: string[] = (() => { try { return JSON.parse(tc.tags || '[]'); } catch { return []; } })();
-      const refs: string[] = (() => { try { return JSON.parse(tc.references || '[]'); } catch { return []; } })();
-      return [
-        tc.title, tc.priority, tc.template, tc.testType,
-        tc.category || '', tags.join(','), tc.section?.name || '',
-        tc.description || '', stepsStr, tc.expectedResult, refs.join(';;'),
-      ].map(escapeCSV).join(',');
-    });
-    const csv = [CSV_HEADERS.join(','), ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  function getExportCases(): TestCase[] {
+    if (exportSectionScope === 'all') return cases;
+    const sec = flatAll(sections).find(s => s.id === exportSectionId);
+    if (!sec) return cases;
+    const ids = getSubtreeIds(sec);
+    return cases.filter(c => c.sectionId && ids.has(c.sectionId));
+  }
+
+  function getExportCasesCount(): number {
+    if (exportSectionScope === 'all') return cases.length;
+    const sec = flatAll(sections).find(s => s.id === exportSectionId);
+    if (!sec) return cases.length;
+    const ids = getSubtreeIds(sec);
+    return cases.filter(c => c.sectionId && ids.has(c.sectionId)).length;
+  }
+
+  function getCellValue(tc: TestCase, key: string): string {
+    const steps: unknown[] = parseJSON(tc.steps);
+    const tags: string[] = parseTags(tc.tags);
+    const refs: string[] = parseTags(tc.references);
+    switch (key) {
+      case 'seqId':          return String(tc.seqId);
+      case 'title':          return tc.title;
+      case 'section':        return tc.section?.name ?? '';
+      case 'status':         return tc.status;
+      case 'priority':       return tc.priority;
+      case 'template':       return tc.template;
+      case 'testType':       return tc.testType ?? '';
+      case 'category':       return tc.category ?? '';
+      case 'tags':           return tags.join(', ');
+      case 'description':    return tc.description ?? '';
+      case 'steps':          return steps.map(s => typeof s === 'string' ? s : (s as Record<string,string>).description ?? '').join(';;');
+      case 'expectedResult': return tc.expectedResult ?? '';
+      case 'references':     return refs.join(', ');
+      case 'createdBy':      return tc.createdBy?.name ?? '';
+      case 'assignedTo':     return tc.assignedTo?.name ?? '';
+      default:               return '';
+    }
+  }
+
+  function exportAsCSV() {
+    const cols = EXPORT_COLUMNS.filter(c => exportCols.has(c.key));
+    const delim = exportMaxCompat ? '\t' : ',';
+    const esc = (v: string) => exportMaxCompat ? v.replace(/\t/g, ' ') : escapeCSV(v);
+    const lines: string[] = [cols.map(c => c.label).join(delim)];
+
+    for (const tc of getExportCases()) {
+      const steps: unknown[] = parseJSON(tc.steps);
+      const useSeparate = exportSeparateSteps && exportCols.has('steps')
+        && (tc.template === 'STEPS' || tc.template === 'BDD') && steps.length > 1;
+
+      if (useSeparate) {
+        steps.forEach((s, i) => {
+          const row = cols.map(col => {
+            if (col.key === 'steps') return esc(typeof s === 'string' ? s : (s as Record<string,string>).description ?? '');
+            if (col.key === 'expectedResult') {
+              const perStep = typeof s === 'object' ? (s as Record<string,string>).expectedResult ?? '' : '';
+              return esc(i === steps.length - 1 ? (tc.expectedResult ?? perStep) : perStep);
+            }
+            return i === 0 ? esc(getCellValue(tc, col.key)) : esc('');
+          });
+          lines.push(row.join(delim));
+        });
+      } else {
+        lines.push(cols.map(col => esc(getCellValue(tc, col.key))).join(delim));
+      }
+    }
+
+    const bom = exportMaxCompat ? '﻿' : '';
+    const ext = exportMaxCompat ? '.tsv' : '.csv';
+    const blob = new Blob([bom + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `test-cases-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
+    a.href = url; a.download = `test-cases-${new Date().toISOString().split('T')[0]}${ext}`; a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function exportAsXLSX() {
+    const cols = EXPORT_COLUMNS.filter(c => exportCols.has(c.key));
+    const rows: (string | number)[][] = [cols.map(c => c.label)];
+
+    for (const tc of getExportCases()) {
+      const steps: unknown[] = parseJSON(tc.steps);
+      const useSeparate = exportSeparateSteps && exportCols.has('steps')
+        && (tc.template === 'STEPS' || tc.template === 'BDD') && steps.length > 1;
+
+      if (useSeparate) {
+        steps.forEach((s, i) => {
+          const row = cols.map(col => {
+            if (col.key === 'steps') return typeof s === 'string' ? s : (s as Record<string,string>).description ?? '';
+            if (col.key === 'expectedResult') {
+              const perStep = typeof s === 'object' ? (s as Record<string,string>).expectedResult ?? '' : '';
+              return i === steps.length - 1 ? (tc.expectedResult ?? perStep) : perStep;
+            }
+            return i === 0 ? getCellValue(tc, col.key) : '';
+          });
+          rows.push(row);
+        });
+      } else {
+        rows.push(cols.map(col => getCellValue(tc, col.key)));
+      }
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = cols.map(c => ({ wch: c.key === 'steps' || c.key === 'expectedResult' ? 50 : c.key === 'title' ? 35 : 18 }));
+    ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Test Cases');
+    XLSX.writeFile(wb, `test-cases-${new Date().toISOString().split('T')[0]}.xlsx`);
+  }
+
+  function exportAsXML() {
+    const xmlEsc = (s: string) => String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const TMPL_LABEL: Record<string, string> = {
+      STEPS: 'Test Case (Steps)', TEXT: 'Test Case (Text)',
+      EXPLORATORY: 'Exploratory Session', BDD: 'Test Case (BDD)',
+    };
+    const PRI_LABEL: Record<string, string> = {
+      LOW: 'Low', MEDIUM: 'Medium', HIGH: 'High', CRITICAL: 'Critical',
+    };
+
+    const bySection = new Map<string, TestCase[]>();
+    for (const tc of getExportCases()) {
+      const key = tc.section?.name ?? 'No Section';
+      if (!bySection.has(key)) bySection.set(key, []);
+      bySection.get(key)!.push(tc);
+    }
+
+    let xml = '<?xml version="1.0" encoding="utf-8"?>\n<sections>\n';
+    for (const [sname, tcs] of bySection) {
+      xml += `  <section>\n    <name>${xmlEsc(sname)}</name>\n    <cases>\n`;
+      for (const tc of tcs) {
+        const steps: unknown[] = parseJSON(tc.steps);
+        const tags: string[] = parseTags(tc.tags);
+        const refs: string[] = parseTags(tc.references);
+        xml += `      <case>\n`;
+        xml += `        <id>${tc.seqId}</id>\n`;
+        xml += `        <title>${xmlEsc(tc.title)}</title>\n`;
+        xml += `        <template>${xmlEsc(TMPL_LABEL[tc.template] ?? tc.template)}</template>\n`;
+        xml += `        <type>${xmlEsc(tc.testType ?? 'Functional')}</type>\n`;
+        xml += `        <priority>${xmlEsc(PRI_LABEL[tc.priority] ?? tc.priority)}</priority>\n`;
+        xml += `        <references>${xmlEsc(refs.join(', '))}</references>\n`;
+        xml += `        <custom>\n`;
+        xml += `          <preconds>${xmlEsc(tc.description ?? '')}</preconds>\n`;
+        if (tc.template === 'STEPS' || tc.template === 'BDD') {
+          if (exportSeparateSteps) {
+            xml += `          <steps_separated>\n`;
+            for (const s of steps) {
+              const desc = typeof s === 'string' ? s : (s as Record<string,string>).description ?? '';
+              const exp  = typeof s === 'object'  ? (s as Record<string,string>).expectedResult ?? '' : '';
+              xml += `            <step>\n              <content>${xmlEsc(desc)}</content>\n              <expected>${xmlEsc(exp)}</expected>\n            </step>\n`;
+            }
+            xml += `          </steps_separated>\n`;
+          } else {
+            const joined = steps.map(s => typeof s === 'string' ? s : (s as Record<string,string>).description ?? '').join('\n');
+            xml += `          <steps>${xmlEsc(joined)}</steps>\n`;
+          }
+        } else {
+          const body = steps.length ? (typeof steps[0] === 'string' ? steps[0] : (steps[0] as Record<string,string>).description ?? '') : '';
+          xml += `          <steps>${xmlEsc(body)}</steps>\n`;
+        }
+        xml += `          <expected>${xmlEsc(tc.expectedResult ?? '')}</expected>\n`;
+        if (tags.length) xml += `          <tags>${xmlEsc(tags.join(', '))}</tags>\n`;
+        xml += `        </custom>\n      </case>\n`;
+      }
+      xml += `    </cases>\n  </section>\n`;
+    }
+    xml += '</sections>';
+
+    const blob = new Blob([xml], { type: 'application/xml;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `test-cases-${new Date().toISOString().split('T')[0]}.xml`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleExportSubmit() {
+    if (exportFormat === 'csv') exportAsCSV();
+    else if (exportFormat === 'xlsx') exportAsXLSX();
+    else exportAsXML();
+    setShowExport(false);
   }
 
   function downloadSampleCSV() {
@@ -925,9 +1119,9 @@ export default function TestCaseList() {
           <p className="text-gray-500 text-sm mt-0.5">{cases.length} total</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={handleExport} disabled={visibleCases.length === 0}
+          <button onClick={() => setShowExport(true)} disabled={cases.length === 0}
             className="btn-secondary text-sm disabled:opacity-40">
-            ↓ Export CSV
+            ↓ Export
           </button>
           {canCreate && (
             <button onClick={() => setShowImport(true)} className="btn-secondary text-sm">
@@ -1267,6 +1461,154 @@ export default function TestCaseList() {
                 {bulkBusy ? 'Moving…' : 'Move'}
               </button>
               <button className="btn-secondary flex-1 justify-center" onClick={() => setShowBulkMove(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export modal — TMS-17 */}
+      {showExport && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-xl flex flex-col" style={{ maxHeight: '90vh' }}>
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 shrink-0">
+              <h3 className="text-base font-semibold text-gray-900">Export Test Cases</h3>
+              <button onClick={() => setShowExport(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+            </div>
+
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+
+              {/* Format */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Format</p>
+                <div className="flex gap-2">
+                  {(['xlsx', 'csv', 'xml'] as const).map(fmt => (
+                    <button
+                      key={fmt}
+                      onClick={() => setExportFormat(fmt)}
+                      className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                        exportFormat === fmt
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                      }`}
+                    >
+                      {fmt === 'xlsx' ? 'Excel (.xlsx)' : fmt === 'csv' ? 'CSV (.csv)' : 'XML (.xml)'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Section scope */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sections</p>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" checked={exportSectionScope === 'all'} onChange={() => setExportSectionScope('all')} className="accent-blue-600" />
+                    <span className="text-sm text-gray-700">All sections ({cases.length} test cases)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" checked={exportSectionScope === 'specific'} onChange={() => setExportSectionScope('specific')} className="accent-blue-600" />
+                    <span className="text-sm text-gray-700">Specific section</span>
+                  </label>
+                  {exportSectionScope === 'specific' && (
+                    <select
+                      className="input ml-6"
+                      value={exportSectionId}
+                      onChange={e => setExportSectionId(e.target.value)}
+                    >
+                      <option value="">— Select a section —</option>
+                      {flatAll(sections).map(s => (
+                        <option key={s.id} value={s.id}>
+                          {'　'.repeat(s.depth)}{s.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              {/* Columns */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Columns</p>
+                  <div className="flex gap-2 text-xs">
+                    <button onClick={() => setExportCols(new Set(EXPORT_COLUMNS.map(c => c.key)))} className="text-blue-600 hover:underline">Select all</button>
+                    <span className="text-gray-300">|</span>
+                    <button onClick={() => setExportCols(new Set(DEFAULT_EXPORT_COLS))} className="text-blue-600 hover:underline">Reset to default</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-x-4 gap-y-1.5 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  {EXPORT_COLUMNS.map(col => (
+                    <label key={col.key} className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={exportCols.has(col.key)}
+                        onChange={() => setExportCols(prev => {
+                          const next = new Set(prev);
+                          next.has(col.key) ? next.delete(col.key) : next.add(col.key);
+                          return next;
+                        })}
+                        className="accent-blue-600"
+                      />
+                      <span className="text-sm text-gray-700">{col.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Options */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Options</p>
+                <div className="space-y-3">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={exportSeparateSteps}
+                      onChange={e => setExportSeparateSteps(e.target.checked)}
+                      className="accent-blue-600 mt-0.5"
+                    />
+                    <div>
+                      <p className="text-sm text-gray-700">Include separated steps</p>
+                      <p className="text-xs text-gray-400">
+                        {exportFormat === 'xml'
+                          ? 'Outputs <steps_separated> elements (TestRail-compatible)'
+                          : 'Each step on its own row for STEPS and BDD templates'}
+                      </p>
+                    </div>
+                  </label>
+                  {exportFormat === 'csv' && (
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={exportMaxCompat}
+                        onChange={e => setExportMaxCompat(e.target.checked)}
+                        className="accent-blue-600 mt-0.5"
+                      />
+                      <div>
+                        <p className="text-sm text-gray-700">Maximum Excel compatibility</p>
+                        <p className="text-xs text-gray-400">Uses tab delimiter and UTF-8 BOM for seamless opening in Excel (.tsv)</p>
+                      </div>
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 shrink-0">
+              <p className="text-xs text-gray-400 mr-auto">
+                {getExportCasesCount()} test case{getExportCasesCount() !== 1 ? 's' : ''} will be exported
+              </p>
+              <button onClick={() => setShowExport(false)} className="btn-secondary">Cancel</button>
+              <button
+                onClick={handleExportSubmit}
+                disabled={exportCols.size === 0 || (exportSectionScope === 'specific' && !exportSectionId)}
+                className="btn-primary disabled:opacity-40"
+              >
+                ↓ Export {exportFormat.toUpperCase()}
+              </button>
             </div>
           </div>
         </div>
